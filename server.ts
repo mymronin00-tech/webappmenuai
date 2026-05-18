@@ -1,0 +1,576 @@
+import express from "express";
+import path from "path";
+import fs from "fs";
+import { createServer as createViteServer } from "vite";
+import { GoogleGenAI, Type } from "@google/genai";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const app = express();
+const PORT = 3000;
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+let aiClient: GoogleGenAI | null = null;
+
+function getAI(): GoogleGenAI {
+  if (!aiClient) {
+    aiClient = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY || "",
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+  }
+  return aiClient;
+}
+
+// API: Health Check
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", time: new Date().toISOString() });
+});
+
+// Poly-schema components for menu parsing
+const sharedItemProperties = {
+  nome: { type: Type.OBJECT, properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } } },
+  descrizione: { type: Type.OBJECT, properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } } },
+  prezzo: { type: Type.NUMBER },
+};
+
+// API: Parse menu from image
+app.post("/api/menu/parse", async (req, res) => {
+  req.setTimeout(180000); // 3 minutes timeout
+  try {
+    const { image, fileData, mimeType, menuType } = req.body; 
+    
+    const dataString = fileData || image;
+    const actualMimeType = mimeType || "image/jpeg";
+
+    if (!dataString) throw new Error("File data is missing");
+
+    const response = await generateContentWithRetry({
+      model: "gemini-2.5-flash", 
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: actualMimeType,
+              data: dataString.split(',')[1] || dataString
+            }
+          },
+          {
+            text: `Extract the menu structure from this document. The menu type is "${menuType}".
+            Return a JSON object with:
+            - categories: array of objects { name: { it, en, fr, de } }
+            - dishesByCategoryId: array of objects { categoryId: "ITALIAN_CATEGORY_NAME", dishes: [] }
+            - domande_di_chiarimento: array of strings containing questions for missing/ambiguous fields.
+            
+            Based on the menuType, dishes array should contain:
+            - type "ristorante" | "pizzeria": { tipo: "piatto", nome, descrizione, prezzo, ingredienti: [], allergeni: [], tecnica_cottura: "", tag_dietetici: [] }
+            - type "carta_vini": { tipo: "vino", nome, cantina, denominazione, annata, zona, vitigni: [], gradazione, tipologia, note_degustative, storia, abbinamenti_consigliati: [], prezzo_calice }
+            - type "cocktail": { tipo: "cocktail", nome, categoria_drink, base_alcolica, ingredienti: [], garnish, metodo, glassware, gradazione_indicativa, note_assaggio, allergeni: [] }
+            - type "bar": { tipo: "bar_semplice", nome, descrizione, prezzo, varianti: [] }
+
+            Leave fields empty or null if not present in the image. Do NOT invent data. Accurate translations.`
+          }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            categories: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: {
+                    type: Type.OBJECT,
+                    properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } },
+                    required: ["it"]
+                  }
+                },
+                required: ["name"]
+              }
+            },
+            dishesByCategoryId: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  categoryId: { type: Type.STRING },
+                  dishes: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        tipo: { type: Type.STRING },
+                        nome: { type: Type.OBJECT, properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } } },
+                        descrizione: { type: Type.OBJECT, properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } } },
+                        prezzo: { type: Type.NUMBER },
+                        ingredienti: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        allergeni: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        tecnica_cottura: { type: Type.STRING },
+                        tag_dietetici: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        cantina: { type: Type.STRING },
+                        denominazione: { type: Type.STRING },
+                        annata: { type: Type.NUMBER },
+                        zona: { type: Type.STRING },
+                        vitigni: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        gradazione: { type: Type.NUMBER },
+                        tipologia: { type: Type.STRING },
+                        note_degustative: { type: Type.STRING },
+                        storia: { type: Type.STRING },
+                        abbinamenti_consigliati: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        prezzo_calice: { type: Type.NUMBER },
+                        categoria_drink: { type: Type.STRING },
+                        base_alcolica: { type: Type.STRING },
+                        garnish: { type: Type.STRING },
+                        metodo: { type: Type.STRING },
+                        glassware: { type: Type.STRING },
+                        gradazione_indicativa: { type: Type.STRING },
+                        note_assaggio: { type: Type.STRING },
+                        varianti: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      }
+                    }
+                  }
+                },
+                required: ["categoryId", "dishes"]
+              }
+            },
+            domande_di_chiarimento: { type: Type.ARRAY, items: { type: Type.STRING } }
+          },
+          required: ["categories", "dishesByCategoryId"]
+        }
+      }
+    });
+
+    if (!response.text) {
+      throw new Error("Empty response from AI");
+    }
+
+    res.json(JSON.parse(response.text));
+  } catch (error: any) {
+    console.error("Parse Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+async function translatePiatti(parsedResult: any, sourceLang = "it") {
+  // Costruisci elenco testi da tradurre
+  const textsToTranslate: string[] = [];
+  parsedResult.dishesByCategoryId?.forEach((cat: any) => {
+    cat.dishes?.forEach((d: any) => {
+      if (d.nome && typeof d.nome === "string") d.nome = { it: d.nome };
+      if (d.descrizione && typeof d.descrizione === "string") d.descrizione = { it: d.descrizione };
+
+      if (d.nome?.[sourceLang]) textsToTranslate.push(d.nome[sourceLang]);
+      if (d.descrizione?.[sourceLang]) textsToTranslate.push(d.descrizione[sourceLang]);
+    });
+  });
+  
+  parsedResult.categories?.forEach((c: any) => {
+    if (c.name && typeof c.name === "string") c.name = { it: c.name };
+    if (c.name?.[sourceLang]) textsToTranslate.push(c.name[sourceLang]);
+  });
+  
+  if (textsToTranslate.length === 0) return parsedResult;
+  
+  const prompt = `Sei un traduttore esperto di menu di ristoranti italiani. Devi tradurre nomi di piatti dall'italiano in inglese (en), francese (fr) e tedesco (de). Segui queste regole RIGOROSE:
+
+REGOLA 1 — MAI TRADURRE i seguenti termini (lasciali identici all'originale):
+- Tipi di pasta: spaghetti, linguine, tagliolini, tagliatelle, orecchiette, troccoli, troccolo, calamarata, rigatoni, fettuccine, ravioli, lasagne, gnocchi, penne, farfalle, paccheri, fusilli, bucatini, tortellini, agnolotti, malloreddus, sagne, pici, bigoli
+- Nomi di pizza: Margherita, Marinara, Capricciosa, Bologna-Leuca
+- Formaggi italiani: burrata, mozzarella, fior di latte, scamorza, ricotta, stracciatella, provola, pecorino, parmigiano, gorgonzola, mascarpone, taleggio, asiago
+- Preparazioni storiche: antipasto, frittata, carpaccio, crudité, frutti di mare, fritto misto
+- Vitigni italiani: Sangiovese, Nebbiolo, Primitivo, Negroamaro
+
+REGOLA 2 — TRADUCI questi tipi di parole:
+- Ingredienti pesci/carni: polpo, vongole, cozze, tonno, gamberi
+- Verdure, Carne, Aggettivi/tecniche
+
+REGOLA 3 — STRUTTURA del piatto da preservare in ogni lingua.
+REGOLA 4 — Nomi propri inventati o regionalismi sconosciuti: LASCIALI INVARIATI.
+
+OUTPUT: ritorna SOLO un oggetto JSON strutturato esattamente come:
+{
+  "en": ["traduzione1", "traduzione2", ...],
+  "fr": ["traduzione1", "traduzione2", ...],
+  "de": ["traduzione1", "traduzione2", ...]
+}
+Gli array "en", "fr" e "de" devono contenere ESATTAMENTE ${textsToTranslate.length} elementi ciascuno, corrispondenti all'ordine dei testi passati.
+Niente commenti, niente spiegazioni.
+
+TESTI DA TRADURRE: ${JSON.stringify(textsToTranslate)}`;
+
+  let translations = { en: [] as string[], fr: [] as string[], de: [] as string[] };
+  try {
+    const result = await callGeminiWithRetry(
+      getAI().chats.create({ 
+        model: "gemini-2.5-flash",
+        config: { responseMimeType: "application/json" }
+      }),
+      prompt
+    );
+    let text = result.text || "{}";
+    if (text.includes("\`\`\`json")) {
+      text = text.split("\`\`\`json")[1].split("\`\`\`")[0].trim();
+    } else if (text.includes("\`\`\`")) {
+      text = text.split("\`\`\`")[1].split("\`\`\`")[0].trim();
+    }
+    const translated = JSON.parse(text);
+    if (translated.en && translated.fr && translated.de) {
+      translations = translated;
+    }
+  } catch (e: any) {
+    console.error("Errore traduzione batch:", e?.message || e);
+  }
+
+  // Mappa back ai piatti
+  let idx = 0;
+  parsedResult.dishesByCategoryId?.forEach((cat: any) => {
+    cat.dishes?.forEach((d: any) => {
+      if (d.nome?.[sourceLang]) {
+        d.nome.en = translations.en[idx] || d.nome[sourceLang];
+        d.nome.fr = translations.fr[idx] || d.nome[sourceLang];
+        d.nome.de = translations.de[idx] || d.nome[sourceLang];
+        idx++;
+      }
+      if (d.descrizione?.[sourceLang]) {
+        d.descrizione.en = translations.en[idx] || d.descrizione[sourceLang];
+        d.descrizione.fr = translations.fr[idx] || d.descrizione[sourceLang];
+        d.descrizione.de = translations.de[idx] || d.descrizione[sourceLang];
+        idx++;
+      }
+    });
+  });
+  parsedResult.categories?.forEach((c: any) => {
+    if (c.name?.[sourceLang]) {
+      c.name.en = translations.en[idx] || c.name[sourceLang];
+      c.name.fr = translations.fr[idx] || c.name[sourceLang];
+      c.name.de = translations.de[idx] || c.name[sourceLang];
+      idx++;
+    }
+  });
+  
+  return parsedResult;
+}
+
+// API: Parse menu from image with auto-translation
+app.post("/api/menu/parse-v2", async (req, res) => {
+  req.setTimeout(300000); // 5 minutes timeout for parse + translate
+  try {
+    const { image, fileData, mimeType, menuType } = req.body; 
+    const dataString = fileData || image;
+    const actualMimeType = mimeType || "image/jpeg";
+
+    const response = await generateContentWithRetry({
+      model: "gemini-2.5-flash", 
+      contents: {
+        parts: [
+          { inlineData: { mimeType: actualMimeType, data: dataString.split(',')[1] || dataString } },
+          { text: `Extract dishes and categories from this menu image. 
+Return JSON strictly following the schema. 
+- The 'categories' array must contain the names of the menu sections.
+- The 'dishesByCategoryId' array must group dishes under their respective sections.
+- IMPORTANT: Extract all ingredients from the description and format them as an array of strings in the 'ingredienti' field.
+- IMPORTANT: The 'categoryId' in 'dishesByCategoryId' MUST EXACTLY MATCH the 'categories[].name.it' string (same spelling and case).` }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            categories: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: {
+                    type: Type.OBJECT,
+                    properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } },
+                    required: ["it"]
+                  }
+                }
+              }
+            },
+            dishesByCategoryId: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  categoryId: { type: Type.STRING },
+                  dishes: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        nome: { type: Type.OBJECT, properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } } },
+                        descrizione: { type: Type.OBJECT, properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } } },
+                        prezzo: { type: Type.NUMBER },
+                        ingredienti: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        allergeni: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            domande_di_chiarimento: { type: Type.ARRAY, items: { type: Type.STRING } }
+          }
+        }
+      }
+    });
+
+    const extracted = JSON.parse(response.text || "{}");
+    const translated = await translatePiatti(extracted, "it");
+    res.json(translated);
+  } catch (error: any) {
+    console.error("Parse V2 Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Batch translate menu
+app.post("/api/menu/translate", async (req, res) => {
+  req.setTimeout(300000); // 5 mins timeout
+  try {
+    const { categories, dishesByCategoryId } = req.body;
+    
+    if (categories && dishesByCategoryId) {
+      const translated = await translatePiatti({ categories, dishesByCategoryId }, "it");
+      res.json(translated);
+      return;
+    }
+    
+    res.status(400).json({ error: "Missing required parameters categories and dishesByCategoryId" });
+  } catch (error: any) {
+    console.error("Translation api error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+async function generateContentWithRetry(req: any, maxRetries = 3) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await getAI().models.generateContent(req);
+    } catch (error: any) {
+      if (error.status === 503 || error.status === 429 || error.message?.includes("UNAVAILABLE") || error.message?.includes("429")) {
+        if (attempt < maxRetries - 1) {
+          const waitMs = (attempt + 1) * 26000; // wait 26s instead of 2s to handle rate limits
+          console.warn(`Gemini API 503/429, retry in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+  throw new Error("Max retries reached");
+}
+
+async function callGeminiWithRetry(chat: any, msgToSend: string, maxRetries = 3) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await chat.sendMessage({ message: msgToSend });
+    } catch (error: any) {
+      if (error.status === 503 || error.status === 429 || error.message?.includes("UNAVAILABLE") || error.message?.includes("429")) {
+        if (attempt < maxRetries - 1) {
+          const waitMs = (attempt + 1) * 26000; // wait 26s instead of 15s to handle rate limits
+          console.warn(`Gemini 503/429, retry in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+  throw new Error("Max retries reached");
+}
+
+// API: Owner Chat
+app.post("/api/owner/chat", async (req, res) => {
+  try {
+    const { message, restaurantId, activeMenuContext, menus, history, activePlans, trigger, parse_result, fileData, mimeType } = req.body;
+    
+    let instructions = `Sei l'assistente AI di MenuLive. Aiuti il proprietario di un ristorante a gestire il suo menu digitale in italiano. Tono educato medio, frasi brevi e concrete.
+        
+    Contesto attuale:
+    Tutti i Menu del Ristorante: ${JSON.stringify(menus)}
+    Menu Attivo al momento: ${JSON.stringify(activeMenuContext)}
+    Pianificazioni aperte: ${JSON.stringify(activePlans)}
+    
+    REGOLE FONDAMENTALI PER LE AZIONI:
+    1. Quando proponi un'azione che modifica il menu, includi alla fine del tuo messaggio un blocco JSON nel formato:
+    \`\`\`json
+    {
+      "azione_proposta": {
+        "type": "direct_update" | "schedule_update" | "direct_create" | "schedule_create" | "direct_delete",
+        "trigger_datetime": "ISO_STRING if scheduled",
+        "target": { "menuId": "id", "categoriaId": "id", "itemId": "id_or_new" },
+        "updates": { "campo": "nuovo valore" },
+        "descrizione": "Stringa human-readable chiara dell'azione, per la UI (es. 'Eliminerò definitivamente il menu delle pizze')"
+      }
+    }
+    \`\`\`
+    2. Il tuo testo conversazionale deve essere autosufficiente, SENZA fare riferimento al JSON sottostante o dire "come vedi nel JSON". Scrivi naturalmente.
+    3. Se chiedi conferma, NON anticipare che hai "eliminato", "aggiornato" o "pianificato". Dì solo cosa STAI PER fare. L'esito verrà confermato dopo il click di conferma del ristoratore. (es: "Eliminerò il menu delle pizze. Confermi?")
+    4. Riconosci comandi temporali (oggi, domani, per il weekend) e proponili come schedulazioni ("schedule_*"), non come dirette ("direct_*").
+    5. Massimo UN blocco JSON per messaggio. Deve essere racchiuso in fence \`\`\`json.
+    6. Se chiedi chiarimenti, falli uno alla volta. Non fare questionari.
+    7. Quando aggiungi o modifichi un piatto, INCLUDI l'estrazione degli "ingredienti" (array di stringhe) se menzionati, separandoli dalla descrizione.`;
+
+    if (trigger === "post_parsing" && parse_result) {
+      instructions += `\n\nL'utente ha appena caricato un menu. Stato dettagliato del parsing: ${JSON.stringify(parse_result)}. Genera un messaggio di onboarding proattivo seguendo QUESTE regole:
+
+      1. PRIMA RIGA: breve saluto + riepilogo numerico (es. 'Ho estratto 23 piatti dal tuo Menu Ristorante')
+      2. SECONDA SEZIONE: cita 2-3 piatti specifici PER NOME con eventuali problemi reali dal parse_result. Esempio: 'Sul Pescato del giorno ho letto 120/kg, confermi che è il prezzo al chilo?' oppure 'Sul Tagliolino burro di Normandia ho estratto 5 ingredienti ma manca la tecnica di cottura, vuoi specificarla?'
+      3. TERZA SEZIONE: chiudi con UNA domanda concreta e azionabile per il ristoratore. Non un questionario.
+
+      REGOLE:
+      - Usa i NOMI VERI dei piatti citati nel parse_result, non frasi generiche.
+      - Massimo 4-5 righe totali.
+      - Italiano educato, tono professionale ma caldo.
+      - Se non ci sono problemi rilevanti, di' 'Tutto sembra estratto correttamente, vuoi pubblicare il menu o ti aiuto a completare i dettagli mancanti?'
+      - NON includere blocchi JSON di azione_proposta in questo messaggio iniziale (è solo informativo + UNA domanda).`;
+    }
+
+    if (trigger === "action_cancelled") {
+      instructions += `\n\nL'utente ha ANNULLATO l'azione proposta: "${req.body.action_desc}". 
+      Prendi atto dell'annullamento con una frase brevissima (max 10-15 parole) ed educata. 
+      Esempio: 'Nessun problema, ho annullato la modifica. Serve altro?' o 'Capito, l'azione è stata cancellata. Come posso aiutarti ora?'
+      NON proporre altre azioni in questo messaggio.`;
+    }
+
+    const formattedHistory = (history || []).map((msg: any) => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.text }]
+    }));
+    
+    const chat = getAI().chats.create({
+      model: "gemini-2.5-flash",
+      history: formattedHistory,
+      config: {
+        systemInstruction: instructions
+      }
+    });
+
+    let msgToSend: any = message || (trigger === "post_parsing" ? "Genera riepilogo parsing" : "Ciao");
+    
+    if (fileData && mimeType) {
+        msgToSend = [
+            { text: message || "Analizza questo file per aggiornare o rispondere alle mie richieste:" },
+            { inlineData: { mimeType, data: fileData.includes(',') ? fileData.split(',')[1] : fileData } }
+        ];
+    }
+
+    const result = await callGeminiWithRetry(chat, msgToSend);
+    res.json({ text: result.text });
+  } catch (error: any) {
+    console.error("Owner Chat Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Execute Action (Owner)
+app.post("/api/owner/execute-action", async (req, res) => {
+  try {
+    const { action, restaurantId } = req.body;
+    // In a full architecture with Firebase Admin SDK, we would update documents here.
+    // For this client-driven setup, we just confirm receipt.
+    console.log("Executing action server-side for", restaurantId, action);
+    res.json({ success: true, message: "Azione confermata" });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Simulated CRON (applyScheduledChanges)
+app.post("/api/cron/apply-scheduled", async (req, res) => {
+  // A Cloud Scheduler would hit this endpoint every 5 minutes.
+  console.log("CRON: applyScheduledChanges running...");
+  res.json({ success: true, message: "CRON Triggered" });
+});
+
+// API: Customer Chat
+app.post("/api/customer/chat", async (req, res) => {
+  try {
+    const { message, menuContext, history } = req.body;
+    
+    // Map history to SDK format
+    const formattedHistory = (history || []).map((msg: any) => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.text }]
+    }));
+    
+    // Using Gemini Flash for cost-effective chat
+    const chat = getAI().chats.create({
+      model: "gemini-2.5-flash",
+      history: formattedHistory,
+      config: {
+        temperature: 0.2,
+        systemInstruction: `Hai diversi ruoli in base a cosa ti viene chiesto riguardo il menu (ristorante, vini, cocktail).
+        
+        Contesto menu: ${JSON.stringify(menuContext)}
+        
+        Regole per chat sui piatti (assistente menu):
+        Sei l'assistente menu del ristorante. Hai accesso SOLO ai dati nel JSON menu_context fornito. Se un campo è vuoto o assente, dichiara che il ristorante non l'ha specificato. Non inferire ingredienti, tecniche o allergeni non scritti. Risposte brevi, educate, in lingua dell'utente (IT/EN/FR/DE).
+        
+        Regole per chat sui vini (sommelier):
+        Sei il sommelier del ristorante. Conosci SOLO i dati enologici nel vino fornito (cantina, annata, vitigni, zona, note_degustative, storia, abbinamenti_consigliati). NON aggiungere conoscenza enologica dal tuo training. Se l'utente chiede dettagli non nei dati, di' che il ristorante non li ha specificati.
+        
+        Regole per chat sui cocktail (bartender):
+        Sei il bartender del ristorante. Se il cocktail è classico universalmente noto (Negroni, Margarita, Mojito, Spritz, Americano) E gli ingredienti dichiarati corrispondono alla ricetta standard, puoi usare conoscenza generale documentata sulla storia. Se è signature, ingredienti non standard, o nome sconosciuto, limitati ai dati nel JSON e rimanda al bartender per la storia.
+        
+        Ricorda: Sii sempre cortese. Non invenare mai informazioni mancanti dal JSON per piatti e vini.`
+      }
+    });
+
+    const msgToSend = message;
+    const result = await callGeminiWithRetry(chat, msgToSend);
+    res.json({ text: result.text });
+  } catch (error: any) {
+    console.error("Chat Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Unhandled Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+async function startServer() {
+  try {
+    if (process.env.NODE_ENV !== "production") {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), "dist");
+      app.use(express.static(distPath));
+      app.get("*", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+    }
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://0.0.0.0:${PORT}`);
+    });
+  } catch (err) {
+    console.error("Failed to start server:", err);
+    process.exit(1);
+  }
+}
+
+startServer();

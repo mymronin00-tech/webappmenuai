@@ -1,0 +1,6 @@
+{
+  "name": "MenuLive - AI Digital Menu",
+  "description": "Full-stack platform for restaurants to manage digital menus via AI, featuring photo-to-menu parsing and an AI customer assistant.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

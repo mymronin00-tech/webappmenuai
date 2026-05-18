@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net: default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(restaurantId) {
+      return request.auth != null && 
+             get(/databases/$(database)/documents/ristoranti/$(restaurantId)).data.ownerUid == request.auth.uid;
+    }
+
+    match /ristoranti/{restaurantId} {
+      allow read: if true;
+      allow create: if request.auth != null && request.resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if isOwner(restaurantId);
+
+      match /menus/{menuId} {
+        allow read: if resource.data.isPublished == true || isOwner(restaurantId);
+        allow write: if isOwner(restaurantId);
+
+        match /categorie/{catId} {
+          allow read: if true;
+          allow write: if isOwner(restaurantId);
+          match /piatti/{itemId} {
+            allow read: if true;
+            allow write: if isOwner(restaurantId);
+          }
+        }
+      }
+
+      match /chat_history/{menuId} {
+        allow read, write: if isOwner(restaurantId);
+        match /{allChildren=**} {
+          allow read, write: if isOwner(restaurantId);
+        }
+      }
+
+      match /pianificazioni/{planId} {
+        allow read, write: if isOwner(restaurantId);
+      }
+    }
+  }
+}

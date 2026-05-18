@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "Restaurant": {
+      "title": "Restaurant",
+      "description": "Main restaurant profile",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "palette": { "type": "object" },
+        "activeLanguages": { "type": "array", "items": { "type": "string" } },
+        "ownerUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "ownerUid"]
+    },
+    "Menu": {
+      "title": "Menu",
+      "description": "A specific menu version",
+      "type": "object",
+      "properties": {
+        "isPublished": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["isPublished"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Menu section like Starters or Desserts",
+      "type": "object",
+      "properties": {
+        "name": { "type": "object" },
+        "order": { "type": "number" }
+      },
+      "required": ["name", "order"]
+    },
+    "Dish": {
+      "title": "Dish",
+      "description": "Single menu item",
+      "type": "object",
+      "properties": {
+        "name": { "type": "object" },
+        "description": { "type": "object" },
+        "price": { "type": "number" },
+        "imageUrl": { "type": "string" },
+        "ingredients": { "type": "array", "items": { "type": "string" } },
+        "allergens": { "type": "array", "items": { "type": "string" } },
+        "cookingTechnique": { "type": "string" },
+        "isAvailable": { "type": "boolean" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["name", "price", "isAvailable"]
+    }
+  },
+  "firestore": {
+    "/ristoranti/{restaurantId}": {
+      "schema": "Restaurant",
+      "description": "Restaurant profile"
+    },
+    "/ristoranti/{restaurantId}/menus/{menuId}": {
+      "schema": "Menu",
+      "description": "Menu version"
+    },
+    "/ristoranti/{restaurantId}/menus/{menuId}/categorie/{catId}": {
+      "schema": "Category",
+      "description": "Menu categories"
+    },
+    "/ristoranti/{restaurantId}/menus/{menuId}/categorie/{catId}/piatti/{plateId}": {
+      "schema": "Dish",
+      "description": "Individual dishes"
+    }
+  }
+}
