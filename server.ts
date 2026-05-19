@@ -161,6 +161,46 @@ app.post("/api/menu/parse", async (req, res) => {
   }
 });
 
+function computeAllergeni(ingredienti: string[]): string[] {
+  if (!ingredienti || !Array.isArray(ingredienti)) return [];
+  
+  const allergensSet = new Set<string>();
+  const ings = ingredienti.map(i => i.toLowerCase());
+
+  const mappature: Record<string, string[]> = {
+    "glutine": ["spaghetti", "linguine", "troccoli", "tagliolino", "orecchiette", "ravioli", "lasagne", "gnocchi", "penne", "fettuccine", "pasta", "pane", "pizza", "mollica", "farina", "pangrattato", "crosta", "würstel", "mortadella", "ventricina", "calzone", "base pizza", "base bianca", "frittura"],
+    "crostacei": ["scampi", "gamberi", "gambero", "granchio", "aragosta", "astice", "mazzancolle"],
+    "uova": ["uovo", "uova", "pasta all'uovo", "tagliolino", "maionese", "tiramisù", "frittata", "frittura"],
+    "pesce": ["tonno", "acciuga", "acciughe", "alici", "salmone", "branzino", "orata", "ricciola", "sgombro", "spigola", "colatura di alici", "pescato"],
+    "arachidi": ["arachidi", "arachide", "burro di arachidi"],
+    "soia": ["soia", "salsa di soia", "edamame", "tofu"],
+    "latte": ["latte", "mozzarella", "fior di latte", "burrata", "burratina", "ricotta", "scamorza", "provola", "pecorino", "parmigiano", "grana", "gorgonzola", "feta", "emmental", "burro", "panna", "mascarpone", "yogurt", "gelato", "spumone", "tiramisù", "formaggio"],
+    "frutta_a_guscio": ["pistacchi", "pistacchio", "granella di pistacchio", "mandorle", "mandorla", "noci", "nocciole", "anacardi", "pinoli"],
+    "sedano": ["sedano"],
+    "senape": ["senape", "mostarda"],
+    "sesamo": ["sesamo", "semi di sesamo", "crosta di sesamo"],
+    "solfiti": ["vino", "aceto", "ventricina", "würstel", "mortadella", "speck", "salame"],
+    "lupini": ["lupino", "lupini"],
+    "molluschi": ["cozze", "vongole", "polipo", "polpo", "calamari", "calamaro", "seppia", "ostriche", "lumache di mare"]
+  };
+
+  for (const ing of ings) {
+    for (const [allergen, keywords] of Object.entries(mappature)) {
+      for (const keyword of keywords) {
+        if (ing.includes(keyword)) {
+          if (allergen === "lupini" && (ing.includes("vongola lupino") || ing.includes("vongole lupino"))) {
+            continue;
+          }
+          allergensSet.add(allergen);
+          break;
+        }
+      }
+    }
+  }
+
+  return Array.from(allergensSet);
+}
+
 async function translatePiatti(parsedResult: any, sourceLang = "it") {
   // Costruisci elenco testi da tradurre
   const textsToTranslate: string[] = [];
@@ -168,9 +208,13 @@ async function translatePiatti(parsedResult: any, sourceLang = "it") {
     cat.dishes?.forEach((d: any) => {
       if (d.nome && typeof d.nome === "string") d.nome = { it: d.nome };
       if (d.descrizione && typeof d.descrizione === "string") d.descrizione = { it: d.descrizione };
+      if (d.ingredienti && Array.isArray(d.ingredienti) && d.ingredienti.length > 0 && typeof d.ingredienti[0] === "string") {
+        d.ingredienti = { it: d.ingredienti };
+      }
 
       if (d.nome?.[sourceLang]) textsToTranslate.push(d.nome[sourceLang]);
       if (d.descrizione?.[sourceLang]) textsToTranslate.push(d.descrizione[sourceLang]);
+      if (d.ingredienti?.[sourceLang]) d.ingredienti[sourceLang].forEach((ing: string) => textsToTranslate.push(ing));
     });
   });
   
@@ -247,6 +291,17 @@ TESTI DA TRADURRE: ${JSON.stringify(textsToTranslate)}`;
         d.descrizione.de = translations.de[idx] || d.descrizione[sourceLang];
         idx++;
       }
+      if (d.ingredienti?.[sourceLang]) {
+        d.ingredienti.en = [];
+        d.ingredienti.fr = [];
+        d.ingredienti.de = [];
+        d.ingredienti[sourceLang].forEach((ing: string) => {
+           d.ingredienti.en.push(translations.en[idx] || ing);
+           d.ingredienti.fr.push(translations.fr[idx] || ing);
+           d.ingredienti.de.push(translations.de[idx] || ing);
+           idx++;
+        });
+      }
     });
   });
   parsedResult.categories?.forEach((c: any) => {
@@ -279,7 +334,28 @@ Return JSON strictly following the schema.
 - The 'categories' array must contain the names of the menu sections.
 - The 'dishesByCategoryId' array must group dishes under their respective sections.
 - IMPORTANT: Extract all ingredients from the description and format them as an array of strings in the 'ingredienti' field.
-- IMPORTANT: The 'categoryId' in 'dishesByCategoryId' MUST EXACTLY MATCH the 'categories[].name.it' string (same spelling and case).` }
+- IMPORTANT: The 'categoryId' in 'dishesByCategoryId' MUST EXACTLY MATCH the 'categories[].name.it' string (same spelling and case).
+
+ESTRAZIONE INGREDIENTI (sempre obbligatoria):
+- Se sotto il nome del piatto c'è una riga di ingredienti scritti (tipico nei menu pizza), estraili tutti come array di stringhe nel campo "ingredienti".
+- Se NON c'è riga sotto ma il nome del piatto contiene gli ingredienti (es. "Spaghetti alle cozze", "Polipo, patate e sedano fine", "Burratina e acciughe del Cantabrico"), estrai gli ingredienti dal nome stesso.
+- Mai lasciare ingredienti vuoto se è derivabile dal nome o dalla riga.
+
+CLASSIFICAZIONE DIETETICA (regola CONSERVATIVA STRETTA - in dubbio = false):
+Compila i 4 booleani vegetariano, vegano, senza_glutine, senza_lattosio per OGNI piatto.
+
+vegetariano = true SOLO se NESSUN ingrediente è: carne, pesce, crostacei, molluschi, salume, brodo di carne/pesce, gelatina animale, lardo, strutto, würstel, mortadella, prosciutto, speck, salame, tonno, polipo, scampi, cozze, vongole, gamberi, ricciola, branzino, orata, calamari, seppia, acciughe.
+- Se ingredienti vuoto E nome contiene parole sospette (es. "Crudité", "Tartare", "Fritto di mare", "Frutti di mare") = false.
+
+vegano = true SOLO se vegetariano=true E NESSUN ingrediente è: latte, mozzarella, fior di latte, burrata, ricotta, scamorza, provola, pecorino, parmigiano, gorgonzola, formaggio, burro, panna, uovo, uova, miele.
+
+senza_glutine = true SOLO se NESSUN ingrediente è: pasta (spaghetti, linguine, troccoli, tagliolino, orecchiette, ravioli, lasagne, gnocchi, penne), pane, pizza, mollica, farina, pangrattato, crosta di sesamo o pavoero (la crosta solitamente contiene farina), würstel, ventricina, mortadella (possono contenere glutine in tracce), pasta sfoglia, tiramisù, spumone, base pizza, calzone, frittura (impanatura).
+- Se piatto è una pizza o un calzone = false sempre.
+- Se piatto è un dolce non specificato chiaramente come senza glutine = false.
+
+senza_lattosio = true SOLO se NESSUN ingrediente è: latte, mozzarella, fior di latte, burrata, burratina, ricotta, scamorza, provola, pecorino, parmigiano, grana, gorgonzola, formaggio, feta, emmental, burro, panna, mascarpone, yogurt, gelato, spumone, tiramisù, crema di latte.
+
+REGOLA DI SICUREZZA: se hai QUALSIASI dubbio sulla composizione, metti false. È meglio un false negativo (piatto vegano marcato come non-vegano) di un falso positivo (piatto non-vegano marcato come vegano) che può causare reazioni allergiche o tradimento di restrizioni etiche.` }
         ]
       },
       config: {
@@ -315,6 +391,10 @@ Return JSON strictly following the schema.
                         descrizione: { type: Type.OBJECT, properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } } },
                         prezzo: { type: Type.NUMBER },
                         ingredienti: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        vegetariano: { type: Type.BOOLEAN },
+                        vegano: { type: Type.BOOLEAN },
+                        senza_glutine: { type: Type.BOOLEAN },
+                        senza_lattosio: { type: Type.BOOLEAN },
                         allergeni: { type: Type.ARRAY, items: { type: Type.STRING } },
                       }
                     }
@@ -329,6 +409,13 @@ Return JSON strictly following the schema.
     });
 
     const extracted = JSON.parse(response.text || "{}");
+    
+    extracted.dishesByCategoryId?.forEach((cat: any) => {
+      cat.dishes?.forEach((d: any) => {
+        d.allergeni = computeAllergeni(d.ingredienti || []);
+      });
+    });
+
     const translated = await translatePiatti(extracted, "it");
     res.json(translated);
   } catch (error: any) {
@@ -515,20 +602,25 @@ app.post("/api/customer/chat", async (req, res) => {
       history: formattedHistory,
       config: {
         temperature: 0.2,
-        systemInstruction: `Hai diversi ruoli in base a cosa ti viene chiesto riguardo il menu (ristorante, vini, cocktail).
-        
-        Contesto menu: ${JSON.stringify(menuContext)}
-        
-        Regole per chat sui piatti (assistente menu):
-        Sei l'assistente menu del ristorante. Hai accesso SOLO ai dati nel JSON menu_context fornito. Se un campo è vuoto o assente, dichiara che il ristorante non l'ha specificato. Non inferire ingredienti, tecniche o allergeni non scritti. Risposte brevi, educate, in lingua dell'utente (IT/EN/FR/DE).
-        
-        Regole per chat sui vini (sommelier):
-        Sei il sommelier del ristorante. Conosci SOLO i dati enologici nel vino fornito (cantina, annata, vitigni, zona, note_degustative, storia, abbinamenti_consigliati). NON aggiungere conoscenza enologica dal tuo training. Se l'utente chiede dettagli non nei dati, di' che il ristorante non li ha specificati.
-        
-        Regole per chat sui cocktail (bartender):
-        Sei il bartender del ristorante. Se il cocktail è classico universalmente noto (Negroni, Margarita, Mojito, Spritz, Americano) E gli ingredienti dichiarati corrispondono alla ricetta standard, puoi usare conoscenza generale documentata sulla storia. Se è signature, ingredienti non standard, o nome sconosciuto, limitati ai dati nel JSON e rimanda al bartender per la storia.
-        
-        Ricorda: Sii sempre cortese. Non invenare mai informazioni mancanti dal JSON per piatti e vini.`
+        systemInstruction: `Sei l'assistente menu del ristorante. Hai accesso SOLO ai dati nel JSON menuContext: ${JSON.stringify(menuContext)}
+
+REGOLA FERREA — RISTREZIONI ALIMENTARI E ALLERGIE:
+Quando l'utente menziona dieta vegetariana, vegana, celiachia, intolleranza al lattosio, o qualsiasi allergia, NON DEDURRE MAI dai nomi dei piatti o ingredienti.
+- Per "vegetariano": elenca SOLO piatti con vegetariano===true
+- Per "vegano": elenca SOLO piatti con vegano===true
+- Per "celiaco / senza glutine": elenca SOLO piatti con senza_glutine===true
+- Per "intollerante al lattosio": elenca SOLO piatti con senza_lattosio===true
+- Per allergie specifiche (es. "allergico ai crostacei"): elenca SOLO piatti il cui array allergeni NON contiene quell'allergene
+- Se NESSUN piatto matcha, dichiaralo onestamente: "Mi dispiace, in questo menu non sono presenti piatti adatti alla sua richiesta. Le consiglio di rivolgersi al personale per opzioni custom."
+- MAI inventare un piatto. MAI raccomandare un piatto non flaggato come adatto.
+
+Per consigli generici sui piatti: usa i dati nel JSON (nome, descrizione, ingredienti, tecnica). Se un campo è vuoto, dichiara che il ristorante non l'ha specificato.
+
+Per chat sui vini (sommelier): conosci SOLO i dati enologici nel vino (cantina, annata, vitigni, zona, note_degustative, storia, abbinamenti_consigliati). NON aggiungere conoscenza dal training. Se l'utente chiede dettagli non nei dati, dichiara che il ristorante non li ha specificati.
+
+Per chat sui cocktail (bartender): se cocktail è classico universalmente noto (Negroni, Margarita, Mojito, Spritz, Americano) E gli ingredienti dichiarati corrispondono alla ricetta standard, puoi citare storia generale. Se signature o sconosciuto, limitati ai dati nel JSON.
+
+Risposte brevi, educate, in lingua dell'utente (IT/EN/FR/DE). Mai inventare informazioni mancanti.`
       }
     });
 
