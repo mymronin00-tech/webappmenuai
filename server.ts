@@ -161,11 +161,9 @@ app.post("/api/menu/parse", async (req, res) => {
   }
 });
 
-function computeAllergeni(ingredienti: string[]): string[] {
-  if (!ingredienti || !Array.isArray(ingredienti)) return [];
-  
+function computeAllergeni(ingredienti: string[], context?: { nome?: string; categoria?: string; menuType?: string }): string[] {
   const allergensSet = new Set<string>();
-  const ings = ingredienti.map(i => i.toLowerCase());
+  const ings = (Array.isArray(ingredienti) ? ingredienti : []).map(i => i.toLowerCase());
 
   const mappature: Record<string, string[]> = {
     "glutine": ["spaghetti", "linguine", "troccoli", "tagliolino", "orecchiette", "ravioli", "lasagne", "gnocchi", "penne", "fettuccine", "pasta", "pane", "pizza", "mollica", "farina", "pangrattato", "crosta", "würstel", "mortadella", "ventricina", "calzone", "base pizza", "base bianca", "frittura"],
@@ -196,6 +194,18 @@ function computeAllergeni(ingredienti: string[]): string[] {
         }
       }
     }
+  }
+
+  const ctxString = `${context?.nome || ""} ${context?.categoria || ""} ${context?.menuType || ""}`.toLowerCase();
+  
+  if (ctxString.includes("pizza") || ctxString.includes("calzone")) {
+    allergensSet.add("glutine");
+  }
+  
+  if (ctxString.includes("dolc") || ctxString.includes("dessert") || ctxString.includes("tiramisù") || ctxString.includes("spumone")) {
+    allergensSet.add("glutine");
+    allergensSet.add("uova");
+    allergensSet.add("latte");
   }
 
   return Array.from(allergensSet);
@@ -412,7 +422,11 @@ REGOLA DI SICUREZZA: se hai QUALSIASI dubbio sulla composizione, metti false. È
     
     extracted.dishesByCategoryId?.forEach((cat: any) => {
       cat.dishes?.forEach((d: any) => {
-        d.allergeni = computeAllergeni(d.ingredienti || []);
+        d.allergeni = computeAllergeni(d.ingredienti || [], {
+          nome: d.nome?.it || d.nome || "",
+          categoria: cat.categoryId || "",
+          menuType: menuType || ""
+        });
       });
     });
 
