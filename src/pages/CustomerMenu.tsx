@@ -35,6 +35,33 @@ export function getLocalized(
   return "";
 }
 
+export function getLocalizedArray(
+  field: any,
+  currentLang: string,
+  defaultLang: string = "it"
+): any[] {
+  if (!field) return [];
+  if (Array.isArray(field)) return field;
+  if (typeof field === "string") return [field];
+  if (typeof field !== "object") return [];
+  
+  if (field[currentLang] && Array.isArray(field[currentLang])) {
+    return field[currentLang];
+  }
+  
+  if (field[defaultLang] && Array.isArray(field[defaultLang])) {
+    return field[defaultLang];
+  }
+  
+  for (const key of Object.keys(field)) {
+    if (field[key] && Array.isArray(field[key])) {
+      return field[key];
+    }
+  }
+  
+  return [];
+}
+
 type Language = "it" | "en" | "fr" | "de";
 
 export default function CustomerMenu() {
@@ -221,7 +248,7 @@ function PolymorphicItem({ item, lang, menuType, onClick }: any) {
                </div>
                <span className="text-sea font-semibold">€{price}</span>
             </div>
-            {item.ingredienti && <p className="text-xs text-olive/80 line-clamp-2 italic">{Array.isArray(item.ingredienti) ? item.ingredienti.join(", ") : item.ingredienti}</p>}
+            {item.ingredienti && <p className="text-xs text-olive/80 line-clamp-2 italic">{getLocalizedArray(item.ingredienti, lang).join(", ")}</p>}
             <div className="mt-3 flex items-center text-[10px] font-bold text-sea uppercase">
                <Martini size={12} className="mr-1" /> Tap per info Bartender
             </div>
@@ -240,7 +267,7 @@ function PolymorphicItem({ item, lang, menuType, onClick }: any) {
           <div className="flex-1">
              <h3 className="font-serif text-sea text-lg leading-tight">{name}</h3>
              <p className="text-xs font-bold text-olive uppercase tracking-wider mb-1">{item.cantina} {item.annata ? `• ${item.annata}` : ""}</p>
-             <p className="text-[11px] text-olive/70 italic line-clamp-1">{item.zona} • {Array.isArray(item.vitigni) ? item.vitigni.join(', ') : item.vitigni}</p>
+             <p className="text-[11px] text-olive/70 italic line-clamp-1">{item.zona} • {getLocalizedArray(item.vitigni, lang).join(', ')}</p>
              <div className="mt-2 text-[10px] text-sea flex items-center gap-1">
                 <Sparkles size={10} /> Tap per Info Sommelier
              </div>
@@ -301,7 +328,7 @@ function ItemDetailSheet({ isOpen, onClose, item, lang }: any) {
                      <div className="bg-sand p-6 rounded-2xl text-sm text-olive space-y-3 relative overflow-hidden">
                         <Grape className="absolute -bottom-4 -right-4 text-white opacity-40" size={100} />
                         <p><strong>Zona:</strong> {item.zona}</p>
-                        <p><strong>Vitigni:</strong> {Array.isArray(item.vitigni) ? item.vitigni.join(", ") : item.vitigni}</p>
+                        <p><strong>Vitigni:</strong> {getLocalizedArray(item.vitigni, lang).join(", ")}</p>
                         <p><strong>Gradazione:</strong> {item.gradazione}%</p>
                         {item.note_degustative && <p className="italic border-l-2 border-sea pl-3 mt-4">"{item.note_degustative}"</p>}
                      </div>
@@ -315,7 +342,7 @@ function ItemDetailSheet({ isOpen, onClose, item, lang }: any) {
                      </div>
                      <div className="bg-sand p-6 rounded-2xl text-sm text-olive space-y-3 relative overflow-hidden">
                         <Droplets className="absolute -bottom-4 -right-4 text-white opacity-40" size={100} />
-                        <p><strong>Mix:</strong> {Array.isArray(item.ingredienti) ? item.ingredienti.join(", ") : item.ingredienti}</p>
+                        <p><strong>Mix:</strong> {getLocalizedArray(item.ingredienti, lang).join(", ")}</p>
                         {item.garnish && <p><strong>Garnish:</strong> {item.garnish}</p>}
                         {item.metodo && <p><strong>Tecnica:</strong> {item.metodo}</p>}
                         {item.note_assaggio && <p className="italic border-l-2 border-amber-500 pl-3 mt-4 text-amber-900/80">"{item.note_assaggio}"</p>}
@@ -326,7 +353,7 @@ function ItemDetailSheet({ isOpen, onClose, item, lang }: any) {
                      <h2 className="text-3xl font-serif text-sea leading-tight pr-8">{name}</h2>
                      <p className="text-xl font-medium text-sea">€{item.prezzo || item.price}</p>
                      <p className="text-base text-olive leading-relaxed">{desc}</p>
-                     {item.ingredienti && <p className="text-sm"><strong>Ingredienti:</strong> {Array.isArray(item.ingredienti) ? item.ingredienti.join(", ") : item.ingredienti}</p>}
+                     {item.ingredienti && <p className="text-sm"><strong>Ingredienti:</strong> {getLocalizedArray(item.ingredienti, lang).join(", ")}</p>}
                      {item.tecnica_cottura && <p className="text-sm"><strong>Tecnica:</strong> {item.tecnica_cottura}</p>}
                   </div>
                )}
@@ -389,6 +416,9 @@ function AIChatSheet({ isOpen, onClose, menuContext, lang }: any) {
         body: JSON.stringify({ message: userMsg, menuContext: simplifyMenuForAI(fullMenuContext), history: messages })
       });
       const data = await response.json();
+      if (data.error) {
+        throw new Error(typeof data.error === 'object' ? data.error.message || JSON.stringify(data.error) : data.error);
+      }
       setMessages(prev => [...prev, { role: "assistant", text: data.text }]);
     } catch (error) {
       console.error(error);

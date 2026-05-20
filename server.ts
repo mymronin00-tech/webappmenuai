@@ -52,8 +52,8 @@ app.post("/api/menu/parse", async (req, res) => {
 
     if (!dataString) throw new Error("File data is missing");
 
-    const response = await generateContentWithRetry({
-      model: "gemini-2.5-flash", 
+    const response = await generateContentWithRetry((modelName) => ({
+      model: modelName, 
       contents: {
         parts: [
           {
@@ -148,7 +148,7 @@ app.post("/api/menu/parse", async (req, res) => {
           required: ["categories", "dishesByCategoryId"]
         }
       }
-    });
+    }));
 
     if (!response.text) {
       throw new Error("Empty response from AI");
@@ -161,28 +161,40 @@ app.post("/api/menu/parse", async (req, res) => {
   }
 });
 
-function computeAllergeni(ingredienti: string[], context?: { nome?: string; categoria?: string; menuType?: string }): string[] {
+function computeAllergeni(ingredienti: any, context?: { nome?: string; categoria?: string; menuType?: string }): string[] {
   const allergensSet = new Set<string>();
-  const ings = (Array.isArray(ingredienti) ? ingredienti : []).map(i => i.toLowerCase());
+  
+  let extractedIngs: string[] = [];
+  if (Array.isArray(ingredienti)) {
+    extractedIngs = ingredienti;
+  } else if (ingredienti && typeof ingredienti === 'object' && Array.isArray(ingredienti.it)) {
+    extractedIngs = ingredienti.it;
+  }
+  
+  const ings = [...extractedIngs];
+  if (context?.nome) {
+    ings.push(context.nome);
+  }
+  const ingsLower = ings.map(i => i.toLowerCase());
 
   const mappature: Record<string, string[]> = {
     "glutine": ["spaghetti", "linguine", "troccoli", "tagliolino", "orecchiette", "ravioli", "lasagne", "gnocchi", "penne", "fettuccine", "pasta", "pane", "pizza", "mollica", "farina", "pangrattato", "crosta", "würstel", "mortadella", "ventricina", "calzone", "base pizza", "base bianca", "frittura"],
-    "crostacei": ["scampi", "gamberi", "gambero", "granchio", "aragosta", "astice", "mazzancolle"],
+    "crostacei": ["scampi", "gamberi", "gambero", "granchio", "aragosta", "astice", "mazzancolle", "mare"],
     "uova": ["uovo", "uova", "pasta all'uovo", "tagliolino", "maionese", "tiramisù", "frittata", "frittura"],
-    "pesce": ["tonno", "acciuga", "acciughe", "alici", "salmone", "branzino", "orata", "ricciola", "sgombro", "spigola", "colatura di alici", "pescato"],
+    "pesce": ["tonno", "acciuga", "acciughe", "alici", "salmone", "branzino", "orata", "ricciola", "sgombro", "spigola", "colatura di alici", "pescato", "mare"],
     "arachidi": ["arachidi", "arachide", "burro di arachidi"],
     "soia": ["soia", "salsa di soia", "edamame", "tofu"],
-    "latte": ["latte", "mozzarella", "fior di latte", "burrata", "burratina", "ricotta", "scamorza", "provola", "pecorino", "parmigiano", "grana", "gorgonzola", "feta", "emmental", "burro", "panna", "mascarpone", "yogurt", "gelato", "spumone", "tiramisù", "formaggio"],
+    "latte": ["latte", "mozzarella", "fior di latte", "burrata", "burratina", "ricotta", "scamorza", "provola", "pecorino", "parmigiano", "grana", "gorgonzola", "feta", "emmental", "burro", "panna", "mascarpone", "yogurt", "gelato", "spumone", "tiramisù", "formaggio", "cacio"],
     "frutta_a_guscio": ["pistacchi", "pistacchio", "granella di pistacchio", "mandorle", "mandorla", "noci", "nocciole", "anacardi", "pinoli"],
     "sedano": ["sedano"],
     "senape": ["senape", "mostarda"],
     "sesamo": ["sesamo", "semi di sesamo", "crosta di sesamo"],
     "solfiti": ["vino", "aceto", "ventricina", "würstel", "mortadella", "speck", "salame"],
     "lupini": ["lupino", "lupini"],
-    "molluschi": ["cozze", "vongole", "polipo", "polpo", "calamari", "calamaro", "seppia", "ostriche", "lumache di mare"]
+    "molluschi": ["cozze", "vongole", "polipo", "polpo", "calamari", "calamaro", "seppia", "ostriche", "lumache di mare", "mare"]
   };
 
-  for (const ing of ings) {
+  for (const ing of ingsLower) {
     for (const [allergen, keywords] of Object.entries(mappature)) {
       for (const keyword of keywords) {
         if (ing.includes(keyword)) {
@@ -202,10 +214,15 @@ function computeAllergeni(ingredienti: string[], context?: { nome?: string; cate
     allergensSet.add("glutine");
   }
   
-  if (ctxString.includes("dolc") || ctxString.includes("dessert") || ctxString.includes("tiramisù") || ctxString.includes("spumone")) {
-    allergensSet.add("glutine");
-    allergensSet.add("uova");
-    allergensSet.add("latte");
+  const nomeLower = (context?.nome || "").toLowerCase();
+  const isFruitDessert = nomeLower.includes("frutta") || nomeLower.includes("sorbetto") || nomeLower.includes("ananas") || nomeLower.includes("melone");
+  
+  if (!isFruitDessert) {
+    if (ctxString.includes("dolc") || ctxString.includes("dessert") || ctxString.includes("tiramisù") || ctxString.includes("spumone")) {
+      allergensSet.add("glutine");
+      allergensSet.add("uova");
+      allergensSet.add("latte");
+    }
   }
 
   return Array.from(allergensSet);
@@ -265,8 +282,8 @@ TESTI DA TRADURRE: ${JSON.stringify(textsToTranslate)}`;
   let translations = { en: [] as string[], fr: [] as string[], de: [] as string[] };
   try {
     const result = await callGeminiWithRetry(
-      getAI().chats.create({ 
-        model: "gemini-2.5-flash",
+      (modelName) => getAI().chats.create({ 
+        model: modelName,
         config: { responseMimeType: "application/json" }
       }),
       prompt
@@ -329,13 +346,24 @@ TESTI DA TRADURRE: ${JSON.stringify(textsToTranslate)}`;
 // API: Parse menu from image with auto-translation
 app.post("/api/menu/parse-v2", async (req, res) => {
   req.setTimeout(300000); // 5 minutes timeout for parse + translate
+  
+  // Implemet dummy stream to keep connection alive and bypass proxy timeout
+  res.setHeader("Content-Type", "application/json");
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+  
+  const keepAliveInterval = setInterval(() => {
+    res.write(" "); // Send space to bypass 60s proxy idle timeout
+  }, 10000);
+
   try {
     const { image, fileData, mimeType, menuType } = req.body; 
     const dataString = fileData || image;
     const actualMimeType = mimeType || "image/jpeg";
 
-    const response = await generateContentWithRetry({
-      model: "gemini-2.5-flash", 
+    const response = await generateContentWithRetry((modelName) => ({
+      model: modelName, 
       contents: {
         parts: [
           { inlineData: { mimeType: actualMimeType, data: dataString.split(',')[1] || dataString } },
@@ -416,7 +444,7 @@ REGOLA DI SICUREZZA: se hai QUALSIASI dubbio sulla composizione, metti false. È
           }
         }
       }
-    });
+    }));
 
     const extracted = JSON.parse(response.text || "{}");
     
@@ -431,41 +459,66 @@ REGOLA DI SICUREZZA: se hai QUALSIASI dubbio sulla composizione, metti false. È
     });
 
     const translated = await translatePiatti(extracted, "it");
-    res.json(translated);
+    clearInterval(keepAliveInterval);
+    res.end(JSON.stringify(translated));
   } catch (error: any) {
+    clearInterval(keepAliveInterval);
     console.error("Parse V2 Error:", error);
-    res.status(500).json({ error: error.message });
+    res.end(JSON.stringify({ error: error.message }));
   }
 });
 
 // API: Batch translate menu
 app.post("/api/menu/translate", async (req, res) => {
   req.setTimeout(300000); // 5 mins timeout
+  
+  res.setHeader("Content-Type", "application/json");
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+  
+  const keepAliveInterval = setInterval(() => {
+    res.write(" "); 
+  }, 10000);
+
   try {
     const { categories, dishesByCategoryId } = req.body;
     
     if (categories && dishesByCategoryId) {
       const translated = await translatePiatti({ categories, dishesByCategoryId }, "it");
-      res.json(translated);
+      clearInterval(keepAliveInterval);
+      res.end(JSON.stringify(translated));
       return;
     }
     
-    res.status(400).json({ error: "Missing required parameters categories and dishesByCategoryId" });
+    clearInterval(keepAliveInterval);
+    res.end(JSON.stringify({ error: "Missing required parameters categories and dishesByCategoryId" }));
   } catch (error: any) {
+    clearInterval(keepAliveInterval);
     console.error("Translation api error:", error);
-    res.status(500).json({ error: error.message });
+    res.end(JSON.stringify({ error: error.message }));
   }
 });
 
-async function generateContentWithRetry(req: any, maxRetries = 3) {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'];
+
+async function generateContentWithRetry(reqFactory: (model: string) => any) {
+  for (let attempt = 0; attempt < FALLBACK_MODELS.length; attempt++) {
+    const model = FALLBACK_MODELS[attempt];
     try {
-      return await getAI().models.generateContent(req);
+      return await getAI().models.generateContent(reqFactory(model));
     } catch (error: any) {
-      if (error.status === 503 || error.status === 429 || error.message?.includes("UNAVAILABLE") || error.message?.includes("429")) {
-        if (attempt < maxRetries - 1) {
-          const waitMs = (attempt + 1) * 26000; // wait 26s instead of 2s to handle rate limits
-          console.warn(`Gemini API 503/429, retry in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+      const status = error.status || error.code || (error.error && (error.error.status || error.error.code)) || error.response?.status;
+      const isRateLimitOrUnavailableOrNotFound = 
+        status === 503 || status === 429 || status === 404 ||
+        status === "UNAVAILABLE" || status === "NOT_FOUND" ||
+        error.message?.includes("UNAVAILABLE") || error.message?.includes("429") || error.message?.includes("503") ||
+        error.message?.includes("NOT_FOUND") || error.message?.includes("404") || error.message?.includes("no longer available");
+      
+      if (isRateLimitOrUnavailableOrNotFound) {
+        if (attempt < FALLBACK_MODELS.length - 1) {
+          const waitMs = 5000; // max wait 5s to stay under proxy timeout
+          console.warn(`Gemini API error ${status} on ${model}, retry in ${waitMs}ms with ${FALLBACK_MODELS[attempt + 1]} (attempt ${attempt + 1}/${FALLBACK_MODELS.length})`);
           await new Promise(r => setTimeout(r, waitMs));
           continue;
         }
@@ -476,15 +529,24 @@ async function generateContentWithRetry(req: any, maxRetries = 3) {
   throw new Error("Max retries reached");
 }
 
-async function callGeminiWithRetry(chat: any, msgToSend: string, maxRetries = 3) {
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+async function callGeminiWithRetry(chatFactory: (model: string) => any, msgToSend: any) {
+  for (let attempt = 0; attempt < FALLBACK_MODELS.length; attempt++) {
+    const model = FALLBACK_MODELS[attempt];
     try {
+      const chat = chatFactory(model);
       return await chat.sendMessage({ message: msgToSend });
     } catch (error: any) {
-      if (error.status === 503 || error.status === 429 || error.message?.includes("UNAVAILABLE") || error.message?.includes("429")) {
-        if (attempt < maxRetries - 1) {
-          const waitMs = (attempt + 1) * 26000; // wait 26s instead of 15s to handle rate limits
-          console.warn(`Gemini 503/429, retry in ${waitMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+      const status = error.status || error.code || (error.error && (error.error.status || error.error.code)) || error.response?.status;
+      const isRateLimitOrUnavailableOrNotFound = 
+        status === 503 || status === 429 || status === 404 ||
+        status === "UNAVAILABLE" || status === "NOT_FOUND" ||
+        error.message?.includes("UNAVAILABLE") || error.message?.includes("429") || error.message?.includes("503") ||
+        error.message?.includes("NOT_FOUND") || error.message?.includes("404") || error.message?.includes("no longer available");
+      
+      if (isRateLimitOrUnavailableOrNotFound) {
+        if (attempt < FALLBACK_MODELS.length - 1) {
+          const waitMs = 5000; // max wait 5s to stay under proxy timeout
+          console.warn(`Gemini error ${status} on ${model}, retry in ${waitMs}ms with ${FALLBACK_MODELS[attempt + 1]} (attempt ${attempt + 1}/${FALLBACK_MODELS.length})`);
           await new Promise(r => setTimeout(r, waitMs));
           continue;
         }
@@ -497,6 +559,11 @@ async function callGeminiWithRetry(chat: any, msgToSend: string, maxRetries = 3)
 
 // API: Owner Chat
 app.post("/api/owner/chat", async (req, res) => {
+  req.setTimeout(300000); // 5 mins timeout
+  res.setHeader("Content-Type", "application/json");
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  const keepAliveInterval = setInterval(() => { res.write(" "); }, 10000);
+
   try {
     const { message, restaurantId, activeMenuContext, menus, history, activePlans, trigger, parse_result, fileData, mimeType } = req.body;
     
@@ -554,14 +621,6 @@ app.post("/api/owner/chat", async (req, res) => {
       parts: [{ text: msg.text }]
     }));
     
-    const chat = getAI().chats.create({
-      model: "gemini-2.5-flash",
-      history: formattedHistory,
-      config: {
-        systemInstruction: instructions
-      }
-    });
-
     let msgToSend: any = message || (trigger === "post_parsing" ? "Genera riepilogo parsing" : "Ciao");
     
     if (fileData && mimeType) {
@@ -571,11 +630,22 @@ app.post("/api/owner/chat", async (req, res) => {
         ];
     }
 
-    const result = await callGeminiWithRetry(chat, msgToSend);
-    res.json({ text: result.text });
+    const result = await callGeminiWithRetry(
+      (modelName) => getAI().chats.create({
+        model: modelName,
+        history: formattedHistory,
+        config: {
+          systemInstruction: instructions
+        }
+      }), 
+      msgToSend
+    );
+    clearInterval(keepAliveInterval);
+    res.end(JSON.stringify({ text: result.text }));
   } catch (error: any) {
+    clearInterval(keepAliveInterval);
     console.error("Owner Chat Error:", error);
-    res.status(500).json({ error: error.message });
+    res.end(JSON.stringify({ error: error.message }));
   }
 });
 
@@ -601,6 +671,11 @@ app.post("/api/cron/apply-scheduled", async (req, res) => {
 
 // API: Customer Chat
 app.post("/api/customer/chat", async (req, res) => {
+  req.setTimeout(300000); // 5 mins timeout
+  res.setHeader("Content-Type", "application/json");
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  const keepAliveInterval = setInterval(() => { res.write(" "); }, 10000);
+
   try {
     const { message, menuContext, history } = req.body;
     
@@ -611,12 +686,14 @@ app.post("/api/customer/chat", async (req, res) => {
     }));
     
     // Using Gemini Flash for cost-effective chat
-    const chat = getAI().chats.create({
-      model: "gemini-2.5-flash",
-      history: formattedHistory,
-      config: {
-        temperature: 0.2,
-        systemInstruction: `Sei l'assistente menu del ristorante. Hai accesso SOLO ai dati nel JSON menuContext: ${JSON.stringify(menuContext)}
+    const msgToSend = message;
+    const result = await callGeminiWithRetry(
+      (modelName) => getAI().chats.create({
+        model: modelName,
+        history: formattedHistory,
+        config: {
+          temperature: 0.2,
+          systemInstruction: `Sei l'assistente menu del ristorante. Hai accesso SOLO ai dati nel JSON menuContext: ${JSON.stringify(menuContext)}
 
 REGOLA FERREA — RISTREZIONI ALIMENTARI E ALLERGIE:
 Quando l'utente menziona dieta vegetariana, vegana, celiachia, intolleranza al lattosio, o qualsiasi allergia, NON DEDURRE MAI dai nomi dei piatti o ingredienti.
@@ -635,15 +712,16 @@ Per chat sui vini (sommelier): conosci SOLO i dati enologici nel vino (cantina, 
 Per chat sui cocktail (bartender): se cocktail è classico universalmente noto (Negroni, Margarita, Mojito, Spritz, Americano) E gli ingredienti dichiarati corrispondono alla ricetta standard, puoi citare storia generale. Se signature o sconosciuto, limitati ai dati nel JSON.
 
 Risposte brevi, educate, in lingua dell'utente (IT/EN/FR/DE). Mai inventare informazioni mancanti.`
-      }
-    });
-
-    const msgToSend = message;
-    const result = await callGeminiWithRetry(chat, msgToSend);
-    res.json({ text: result.text });
+        }
+      }),
+      msgToSend
+    );
+    clearInterval(keepAliveInterval);
+    res.end(JSON.stringify({ text: result.text }));
   } catch (error: any) {
+    clearInterval(keepAliveInterval);
     console.error("Chat Error:", error);
-    res.status(500).json({ error: error.message });
+    res.end(JSON.stringify({ error: error.message }));
   }
 });
 

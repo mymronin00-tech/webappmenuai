@@ -111,7 +111,9 @@ export function ChatAIRistoratore({ restaurantId, activeMenu, menus, activePlans
     scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
   }, [messages, isTyping]);
 
-  const parseAIMessage = (rawText: string) => {
+  const parseAIMessage = (rawText: string | undefined) => {
+    if (!rawText) return { text: "", azione_proposta: null };
+    
     // Estrai blocco ```json ... ```
     const jsonMatch = rawText.match(/```json\s*([\s\S]*?)```/);
     let azione_proposta = null;
@@ -202,6 +204,9 @@ export function ChatAIRistoratore({ restaurantId, activeMenu, menus, activePlans
          throw new Error(txt || `HTTP ${response.status}`);
       }
       const data = await response.json();
+      if (data.error) {
+        throw new Error(typeof data.error === 'object' ? data.error.message || JSON.stringify(data.error) : data.error);
+      }
       
       const { text, azione_proposta } = parseAIMessage(data.text);
 

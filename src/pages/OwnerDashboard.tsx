@@ -13,6 +13,14 @@ const getLocText = (field: any): string => {
   return field.it || field.en || field.fr || field.de || Object.values(field)[0] || "";
 };
 
+const getLocArray = (field: any): any[] => {
+  if (!field) return [];
+  if (Array.isArray(field)) return field;
+  if (typeof field === "string") return [field];
+  if (typeof field !== "object") return [];
+  return field.it || field.en || field.fr || field.de || Object.values(field).find(Array.isArray) || [];
+};
+
 export default function OwnerDashboard() {
   const [restaurant, setRestaurant] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -66,9 +74,13 @@ export default function OwnerDashboard() {
       if (!resp.ok) throw new Error("Errore comunicazione server");
       const translated = await resp.json();
       
+      if (translated && translated.error) {
+        throw new Error(typeof translated.error === 'object' ? translated.error.message || JSON.stringify(translated.error) : translated.error);
+      }
+      
       let count = 0;
       // 3. Update Firestore locally with permissions
-      for (const cat of translated.categories) {
+      for (const cat of (translated.categories || [])) {
         if (cat.id && cat.name) {
           await updateDoc(doc(db, `ristoranti/${restaurant.id}/menus/${activeMenuId}/categorie`, cat.id), { name: cat.name });
           count++;
@@ -260,13 +272,21 @@ export default function OwnerDashboard() {
       }
 
       if (!response.ok) {
-        let errData = {};
+        let errData: any = {};
         try { errData = await response.json(); } catch(e) {}
-        throw new Error((errData as any).error || `Errore del server: ${response.status}`);
+        const serverError = errData.error;
+        const msg = typeof serverError === 'object' ? serverError.message || JSON.stringify(serverError) : serverError;
+        throw new Error(msg || `Errore del server: ${response.status}`);
       }
 
       const extracted = await response.json();
       console.log("Parsing completion:", extracted);
+      
+      if (extracted && extracted.error) {
+        let msg = extracted.error;
+        if (typeof msg === 'object') msg = msg.message || JSON.stringify(msg);
+        throw new Error(msg);
+      }
       
       if (!extracted || !extracted.categories || extracted.categories.length === 0) {
         if (!extracted.domande_di_chiarimento || extracted.domande_di_chiarimento.length === 0) {
@@ -342,7 +362,7 @@ export default function OwnerDashboard() {
               piatti: cat.dishes?.map((d: any) => ({
                 nome: d.name?.it || d.nome?.it || "MANCANTE",
                 prezzo: d.price ?? d.prezzo ?? "MANCANTE",
-                ingredienti_estratti: d.ingredients?.length || d.ingredienti?.length || 0,
+                ingredienti_estratti: getLocArray(d.ingredienti || d.ingredients).length,
                 allergeni_estratti: d.allergens?.length || d.allergeni?.length || 0,
                 tecnica_estratta: !!(d.cooking_technique || d.tecnica_cottura),
                 descrizione_estratta: !!(d.description?.it || d.descrizione?.it),
@@ -933,7 +953,7 @@ export default function OwnerDashboard() {
                                 </p>
                                 
                                 <div className="flex flex-wrap gap-1 mt-auto">
-                                   {(d.ingredienti || d.ingredients)?.slice(0, 3).map((ing: string, idx: number) => (
+                                   {getLocArray(d.ingredienti || d.ingredients).slice(0, 3).map((ing: string, idx: number) => (
                                      <span key={idx} className="px-1.5 py-0.5 bg-sand/30 text-olive/60 rounded text-[9px] uppercase font-medium">{ing}</span>
                                    ))}
                                    {(d.allergeni || d.allergens)?.length > 0 && (
@@ -1067,7 +1087,7 @@ export default function OwnerDashboard() {
                     </div>
                     <div>
                       <label className="text-xs font-bold uppercase tracking-wider text-olive mb-1 block">Ingredienti Drink</label>
-                      <input type="text" value={(editingDish.ingredienti || []).join(", ")} onChange={e => setEditingDish({...editingDish, ingredienti: e.target.value.split(',').map(v=>v.trim())})} className="w-full p-3 rounded-xl border border-sand bg-sand/10 text-sm outline-none line-clamp-1" />
+                      <input type="text" value={getLocArray(editingDish.ingredienti).join(", ")} onChange={e => setEditingDish({...editingDish, ingredienti: e.target.value.split(',').map(v=>v.trim())})} className="w-full p-3 rounded-xl border border-sand bg-sand/10 text-sm outline-none line-clamp-1" />
                     </div>
                   </>
                 ) : (
@@ -1076,7 +1096,7 @@ export default function OwnerDashboard() {
                       <label className="text-xs font-bold uppercase tracking-wider text-olive mb-1 block">Ingredienti (Comma separated)</label>
                       <input 
                         type="text" 
-                        value={(editingDish.ingredienti || editingDish.ingredients || []).join(", ")} 
+                        value={getLocArray(editingDish.ingredienti || editingDish.ingredients).join(", ")} 
                         onChange={e => {
                           const ings = e.target.value.split(",").map(i => i.trim()).filter(i => i !== "");
                           setEditingDish({ ...editingDish, ingredienti: ings, ingredients: ings });
