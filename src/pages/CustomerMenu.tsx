@@ -84,6 +84,7 @@ export default function CustomerMenu() {
     return "it";
   });
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [activeFilters, setActiveFilters] = useState<string[]>([]);
 
   useEffect(() => {
     localStorage.setItem("menulive_lang", lang);
@@ -137,7 +138,16 @@ export default function CustomerMenu() {
 
   const handleMenuChange = async (menuId: string) => {
     setActiveMenuId(menuId);
+    setActiveFilters([]);
     await fetchCategories(menuId);
+  };
+
+  const toggleFilter = (filterKey: string) => {
+    setActiveFilters(prev => 
+      prev.includes(filterKey) 
+        ? prev.filter(f => f !== filterKey) 
+        : [...prev, filterKey]
+    );
   };
 
   const activeMenuObj = menus.find(m => m.id === activeMenuId);
@@ -173,10 +183,42 @@ export default function CustomerMenu() {
         {/* Diet Filters (only for food) */}
         {["ristorante", "pizzeria", "bar"].includes(activeMenuObj?.tipo || "ristorante") && (
           <div className="flex gap-2 mb-6 overflow-x-auto pb-2 -mx-6 px-6 scrollbar-none">
-             <button className="px-3 py-1 bg-white border border-sand rounded-xl text-[10px] uppercase font-bold text-olive flex items-center gap-1 shrink-0"><Leaf size={12} className="text-green-600"/> Vegetariano</button>
-             <button className="px-3 py-1 bg-white border border-sand rounded-xl text-[10px] uppercase font-bold text-olive flex items-center gap-1 shrink-0">Vegano</button>
-             <button className="px-3 py-1 bg-white border border-sand rounded-xl text-[10px] uppercase font-bold text-olive flex items-center gap-1 shrink-0">Senza Glutine</button>
-             <button className="px-3 py-1 bg-white border border-sand rounded-xl text-[10px] uppercase font-bold text-olive flex items-center gap-1 shrink-0">Senza Lattosio</button>
+             <button
+               onClick={() => toggleFilter("vegetariano")}
+               className={clsx(
+                 "px-3 py-1 rounded-xl text-[10px] uppercase font-bold flex items-center gap-1 shrink-0 transition-all border",
+                 activeFilters.includes("vegetariano") ? "bg-sea text-white border-sea shadow" : "bg-white border-sand text-olive hover:bg-sand-dark/10"
+               )}
+             >
+               <Leaf size={12} className={activeFilters.includes("vegetariano") ? "text-white" : "text-green-600"} /> Vegetariano
+             </button>
+             <button
+               onClick={() => toggleFilter("vegano")}
+               className={clsx(
+                 "px-3 py-1 rounded-xl text-[10px] uppercase font-bold flex items-center gap-1 shrink-0 transition-all border",
+                 activeFilters.includes("vegano") ? "bg-sea text-white border-sea shadow" : "bg-white border-sand text-olive hover:bg-sand-dark/10"
+               )}
+             >
+               Vegano
+             </button>
+             <button
+               onClick={() => toggleFilter("senza_glutine")}
+               className={clsx(
+                 "px-3 py-1 rounded-xl text-[10px] uppercase font-bold flex items-center gap-1 shrink-0 transition-all border",
+                 activeFilters.includes("senza_glutine") ? "bg-sea text-white border-sea shadow animate-none" : "bg-white border-sand text-olive hover:bg-sand-dark/10"
+               )}
+             >
+               Senza Glutine
+             </button>
+             <button
+               onClick={() => toggleFilter("senza_lattosio")}
+               className={clsx(
+                 "px-3 py-1 rounded-xl text-[10px] uppercase font-bold flex items-center gap-1 shrink-0 transition-all border",
+                 activeFilters.includes("senza_lattosio") ? "bg-sea text-white border-sea shadow" : "bg-white border-sand text-olive hover:bg-sand-dark/10"
+               )}
+             >
+               Senza Lattosio
+             </button>
           </div>
         )}
 
@@ -194,7 +236,7 @@ export default function CustomerMenu() {
         <AnimatePresence mode="wait">
           <motion.div key={activeCategory} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className={clsx("space-y-4", (activeMenuObj?.tipo === "bar") ? "space-y-1" : "space-y-6")}>
             {(categories.find(c => c.id === activeCategory)?.dishes || []).map((item: any) => (
-              <PolymorphicItem key={item.id} item={item} lang={lang} menuType={activeMenuObj?.tipo || "ristorante"} onClick={() => setSelectedItem(item)} />
+              <PolymorphicItem key={item.id} item={item} lang={lang} menuType={activeMenuObj?.tipo || "ristorante"} activeFilters={activeFilters} onClick={() => setSelectedItem(item)} />
             ))}
           </motion.div>
         </AnimatePresence>
@@ -215,19 +257,53 @@ export default function CustomerMenu() {
   );
 }
 
-function PolymorphicItem({ item, lang, menuType, onClick }: any) {
+function PolymorphicItem({ item, lang, menuType, onClick, activeFilters = [] }: any) {
   const [isExpanded, setIsExpanded] = useState(false);
   const isSemplice = menuType === "bar" || item.tipo === "bar_semplice";
   const name = getLocalized(item.nome || item.name, lang);
   const desc = getLocalized(item.descrizione || item.description, lang);
   const price = item.prezzo || item.price;
 
-  const allergens = item.allergens || item.allergeni || [];
-  const ingredients = getLocalizedArray(item.ingredienti || item.ingredients, lang);
+  const allergens = item.allergeni || [];
+  const ingredients = getLocalizedArray(item.ingredienti, lang);
+  const matchesAllFilters = activeFilters.every((f: string) => item[f] === true);
+
+  const labels: Record<Language, { description: string; ingredients: string; allergens: string; technique: string; none: string }> = {
+    it: {
+      description: "Descrizione",
+      ingredients: "Ingredienti",
+      allergens: "Allergeni",
+      technique: "Tecnica",
+      none: "Nessun ingrediente o allergene specificato."
+    },
+    en: {
+      description: "Description",
+      ingredients: "Ingredients",
+      allergens: "Allergens",
+      technique: "Technique",
+      none: "No ingredients or allergens specified."
+    },
+    fr: {
+      description: "Description",
+      ingredients: "Ingrédients",
+      allergens: "Allergènes",
+      technique: "Technique",
+      none: "Aucun ingrédient ou allergène spécifié."
+    },
+    de: {
+      description: "Beschreibung",
+      ingredients: "Zutaten",
+      allergens: "Allergene",
+      technique: "Zubereitung",
+      none: "Keine Zutaten oder Allergene angegeben."
+    }
+  };
+
+  const currentLabels = labels[lang as Language] || labels.it;
 
   if (isSemplice) {
      return (
-       <div className="flex justify-between items-center py-3 border-b border-sand/50">
+       <div className={clsx("flex justify-between items-center py-3 border-b border-sand/50 transition-all", !matchesAllFilters && "opacity-30 pointer-events-none")}>
           <div>
             <h3 className="font-serif text-sea font-medium">{name}</h3>
             {desc && <p className="text-[10px] text-olive">{desc}</p>}
@@ -240,7 +316,7 @@ function PolymorphicItem({ item, lang, menuType, onClick }: any) {
   // Cocktail
   if (menuType === "cocktail" || item.tipo === "cocktail") {
      return (
-       <div onClick={onClick} className="bg-white p-4 rounded-2xl border border-sand cursor-pointer hover:border-sea/30 transition-colors shadow-sm relative overflow-hidden group">
+       <div onClick={onClick} className={clsx("bg-white p-4 rounded-2xl border border-sand cursor-pointer hover:border-sea/30 transition-all shadow-sm relative overflow-hidden group", !matchesAllFilters && "opacity-30 pointer-events-none")}>
           <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-bl from-sand/50 to-transparent -mr-5 -mt-5 rounded-bl-[40px] z-0"></div>
           <div className="relative z-10">
             <div className="flex justify-between items-start mb-2">
@@ -264,7 +340,7 @@ function PolymorphicItem({ item, lang, menuType, onClick }: any) {
   // Wine
   if (menuType === "carta_vini" || item.tipo === "vino") {
      return (
-       <div onClick={onClick} className="flex border-b border-sand/50 py-4 cursor-pointer hover:bg-white/50 px-2 -mx-2 rounded-xl transition-colors">
+       <div onClick={onClick} className={clsx("flex border-b border-sand/50 py-4 cursor-pointer hover:bg-white/50 px-2 -mx-2 rounded-xl transition-all", !matchesAllFilters && "opacity-30 pointer-events-none")}>
           <div className="w-10 flex flex-col items-center pt-1 text-olive/30 shrink-0">
              <Wine size={20} />
           </div>
@@ -283,7 +359,7 @@ function PolymorphicItem({ item, lang, menuType, onClick }: any) {
 
   // Dish default
   return (
-    <div onClick={item.foto_url || item.imageUrl ? undefined : onClick} className={clsx("group", (item.foto_url || item.imageUrl || desc) ? "cursor-pointer" : "")}>
+    <div className={clsx("group transition-all", !matchesAllFilters && "opacity-30 pointer-events-none")}>
       <div className="flex flex-col gap-1">
         <div className="flex justify-between items-start gap-4">
           <div className="flex-1">
@@ -328,10 +404,23 @@ function PolymorphicItem({ item, lang, menuType, onClick }: any) {
               onClick={(e) => e.stopPropagation()}
             >
               <div className="mt-3 p-3.5 bg-sand/20 border border-sand/40 rounded-xl space-y-2.5 text-xs">
+                {(item.foto_url || item.imageUrl) && (
+                  <div className="w-full h-40 bg-sand-dark/20 rounded-xl overflow-hidden shadow-inner mb-3">
+                    <img src={item.foto_url || item.imageUrl} className="w-full h-full object-cover" alt="" referrerPolicy="no-referrer" />
+                  </div>
+                )}
+                {desc && (
+                  <div>
+                    <span className="font-bold text-olive uppercase tracking-wider text-[10px] block mb-0.5">
+                      {currentLabels.description}
+                    </span>
+                    <p className="text-olive/95 leading-relaxed font-sans">{desc}</p>
+                  </div>
+                )}
                 {ingredients && ingredients.length > 0 && (
                   <div>
                     <span className="font-bold text-olive uppercase tracking-wider text-[10px] block mb-0.5">
-                      {lang === "en" ? "Ingredients" : "Ingredienti"}
+                      {currentLabels.ingredients}
                     </span>
                     <p className="text-olive/95 leading-relaxed font-sans">{ingredients.join(", ")}</p>
                   </div>
@@ -339,7 +428,7 @@ function PolymorphicItem({ item, lang, menuType, onClick }: any) {
                 {allergens && allergens.length > 0 && (
                   <div>
                     <span className="font-bold text-red-700/80 uppercase tracking-wider text-[10px] block mb-0.5">
-                      {lang === "en" ? "Allergens" : "Allergeni"}
+                      {currentLabels.allergens}
                     </span>
                     <div className="flex flex-wrap gap-1.5 mt-1">
                       {allergens.map((a: string) => (
@@ -350,9 +439,17 @@ function PolymorphicItem({ item, lang, menuType, onClick }: any) {
                     </div>
                   </div>
                 )}
-                {!ingredients?.length && !allergens?.length && (
+                {item.tecnica_cottura && (
+                  <div>
+                    <span className="font-bold text-olive uppercase tracking-wider text-[10px] block mb-0.5">
+                      {currentLabels.technique}
+                    </span>
+                    <p className="text-olive/95 leading-relaxed font-sans">{item.tecnica_cottura}</p>
+                  </div>
+                )}
+                {!desc && !ingredients?.length && !allergens?.length && !item.tecnica_cottura && (
                   <p className="text-olive/60 italic font-sans">
-                    {lang === "en" ? "No ingredients or allergens specified." : "Nessun ingrediente o allergene specificato."}
+                    {currentLabels.none}
                   </p>
                 )}
               </div>

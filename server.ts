@@ -507,7 +507,7 @@ app.post("/api/menu/translate", async (req, res) => {
   }
 });
 
-const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro'];
+const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-3.5-flash'];
 
 async function generateContentWithRetry(reqFactory: (model: string) => any) {
   const maxModelAttempts = 2;
@@ -529,7 +529,8 @@ async function generateContentWithRetry(reqFactory: (model: string) => any) {
       if (isRateLimitOrUnavailableOrNotFound) {
         if (attempt < totalAttempts - 1) {
           const nextModelIndex = Math.floor((attempt + 1) / maxModelAttempts);
-          const nextModel = FALLBACK_MODELS[nextModelIndex] || "end of chain";
+          const willRetrySameModel = nextModelIndex === modelIndex;
+          const nextModel = willRetrySameModel ? `${model} (retry)` : (FALLBACK_MODELS[nextModelIndex] || "end of chain");
           const waitMs = modelAttempt === 0 ? 2000 : 4000;
           console.warn(`Gemini API error ${status} on ${model} (attempt ${modelAttempt + 1}/${maxModelAttempts}), retry in ${waitMs}ms with ${nextModel} (overall attempt ${attempt + 1}/${totalAttempts})`);
           await new Promise(r => setTimeout(r, waitMs));
@@ -563,7 +564,8 @@ async function callGeminiWithRetry(chatFactory: (model: string) => any, msgToSen
       if (isRateLimitOrUnavailableOrNotFound) {
         if (attempt < totalAttempts - 1) {
           const nextModelIndex = Math.floor((attempt + 1) / maxModelAttempts);
-          const nextModel = FALLBACK_MODELS[nextModelIndex] || "end of chain";
+          const willRetrySameModel = nextModelIndex === modelIndex;
+          const nextModel = willRetrySameModel ? `${model} (retry)` : (FALLBACK_MODELS[nextModelIndex] || "end of chain");
           const waitMs = modelAttempt === 0 ? 2000 : 4000;
           console.warn(`Gemini error ${status} on ${model} (attempt ${modelAttempt + 1}/${maxModelAttempts}), retry in ${waitMs}ms with ${nextModel} (overall attempt ${attempt + 1}/${totalAttempts})`);
           await new Promise(r => setTimeout(r, waitMs));
