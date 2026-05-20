@@ -216,10 +216,14 @@ export default function CustomerMenu() {
 }
 
 function PolymorphicItem({ item, lang, menuType, onClick }: any) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const isSemplice = menuType === "bar" || item.tipo === "bar_semplice";
   const name = getLocalized(item.nome || item.name, lang);
   const desc = getLocalized(item.descrizione || item.description, lang);
   const price = item.prezzo || item.price;
+
+  const allergens = item.allergens || item.allergeni || [];
+  const ingredients = getLocalizedArray(item.ingredienti || item.ingredients, lang);
 
   if (isSemplice) {
      return (
@@ -280,24 +284,81 @@ function PolymorphicItem({ item, lang, menuType, onClick }: any) {
   // Dish default
   return (
     <div onClick={item.foto_url || item.imageUrl ? undefined : onClick} className={clsx("group", (item.foto_url || item.imageUrl || desc) ? "cursor-pointer" : "")}>
-      <div className="flex justify-between items-start gap-4">
-        <div className="flex-1">
-          <div className="flex items-baseline gap-2 mb-1">
-            <h3 className="text-lg font-serif text-sea leading-snug">{name}</h3>
-            <div className="flex-1 border-b border-dotted border-olive/30 mx-1"></div>
-            <span className="text-sm font-semibold">€{price}</span>
+      <div className="flex flex-col gap-1">
+        <div className="flex justify-between items-start gap-4">
+          <div className="flex-1">
+            <div className="flex items-baseline gap-2 mb-1">
+              <div className="flex items-center gap-1.5 shrink-0 max-w-[80%] flex-wrap">
+                <h3 className="text-lg font-serif text-sea leading-snug">{name}</h3>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsExpanded(!isExpanded);
+                  }}
+                  className="p-1 text-olive/60 hover:text-sea hover:bg-sand/40 rounded-full transition-colors shrink-0"
+                  title={lang === "en" ? "Show ingredients and allergens" : "Mostra ingredienti e allergeni"}
+                >
+                  <Info size={16} className={clsx("transition-transform duration-200", isExpanded && "scale-110 text-sea")} />
+                </button>
+              </div>
+              <div className="flex-1 border-b border-dotted border-olive/30 mx-1"></div>
+              <span className="text-sm font-semibold shrink-0">€{price}</span>
+            </div>
+            <p className="text-sm text-olive/80 leading-relaxed italic pr-4 line-clamp-2">{desc}</p>
+            <div className="flex gap-2 mt-3 items-center">
+              {allergens?.map((a: string) => <span key={a} title={a} className="w-5 h-5 flex items-center justify-center bg-sand-dark/10 rounded-full text-[10px] opacity-70">{a.charAt(0).toUpperCase()}</span>)}
+              {item.tag_dietetici?.map((t: string) => <span key={t} className="text-[10px] text-olive uppercase tracking-wider font-semibold opacity-50">• {t}</span>)}
+            </div>
           </div>
-          <p className="text-sm text-olive/80 leading-relaxed italic pr-4 line-clamp-2">{desc}</p>
-          <div className="flex gap-2 mt-3 items-center">
-            {item.allergens?.map((a: string) => <span key={a} title={a} className="w-5 h-5 flex items-center justify-center bg-sand-dark/10 rounded-full text-[10px] opacity-70">{a.charAt(0).toUpperCase()}</span>)}
-            {item.tag_dietetici?.map((t: string) => <span key={t} className="text-[10px] text-olive uppercase tracking-wider font-semibold opacity-50">• {t}</span>)}
-          </div>
+          {(item.foto_url || item.imageUrl) && (
+            <div className="w-20 h-20 bg-sand-dark/20 rounded-xl overflow-hidden shrink-0 shadow-inner">
+               <img src={item.foto_url || item.imageUrl} className="w-full h-full object-cover" alt="" referrerPolicy="no-referrer" />
+            </div>
+          )}
         </div>
-        {(item.foto_url || item.imageUrl) && (
-          <div className="w-20 h-20 bg-sand-dark/20 rounded-xl overflow-hidden shrink-0 shadow-inner">
-             <img src={item.foto_url || item.imageUrl} className="w-full h-full object-cover" alt="" referrerPolicy="no-referrer" />
-          </div>
-        )}
+
+        <AnimatePresence>
+          {isExpanded && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.25, ease: "easeInOut" }}
+              className="overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="mt-3 p-3.5 bg-sand/20 border border-sand/40 rounded-xl space-y-2.5 text-xs">
+                {ingredients && ingredients.length > 0 && (
+                  <div>
+                    <span className="font-bold text-olive uppercase tracking-wider text-[10px] block mb-0.5">
+                      {lang === "en" ? "Ingredients" : "Ingredienti"}
+                    </span>
+                    <p className="text-olive/95 leading-relaxed font-sans">{ingredients.join(", ")}</p>
+                  </div>
+                )}
+                {allergens && allergens.length > 0 && (
+                  <div>
+                    <span className="font-bold text-red-700/80 uppercase tracking-wider text-[10px] block mb-0.5">
+                      {lang === "en" ? "Allergens" : "Allergeni"}
+                    </span>
+                    <div className="flex flex-wrap gap-1.5 mt-1">
+                      {allergens.map((a: string) => (
+                        <span key={a} className="px-2 py-0.5 bg-red-50/60 text-red-700 border border-red-100 rounded-full font-medium text-[10px]">
+                          {a}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {!ingredients?.length && !allergens?.length && (
+                  <p className="text-olive/60 italic font-sans">
+                    {lang === "en" ? "No ingredients or allergens specified." : "Nessun ingrediente o allergene specificato."}
+                  </p>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

@@ -161,7 +161,10 @@ app.post("/api/menu/parse", async (req, res) => {
   }
 });
 
-function computeAllergeni(ingredienti: any, context?: { nome?: string; categoria?: string; menuType?: string }): string[] {
+function computeAllergeni(
+  ingredienti: any, 
+  context?: { nome?: string; categoria?: string; menuType?: string; descrizione?: string }
+): string[] {
   const allergensSet = new Set<string>();
   
   let extractedIngs: string[] = [];
@@ -174,6 +177,9 @@ function computeAllergeni(ingredienti: any, context?: { nome?: string; categoria
   const ings = [...extractedIngs];
   if (context?.nome) {
     ings.push(context.nome);
+  }
+  if (context?.descrizione) {
+    ings.push(context.descrizione);
   }
   const ingsLower = ings.map(i => i.toLowerCase());
 
@@ -453,7 +459,8 @@ REGOLA DI SICUREZZA: se hai QUALSIASI dubbio sulla composizione, metti false. È
         d.allergeni = computeAllergeni(d.ingredienti || [], {
           nome: d.nome?.it || d.nome || "",
           categoria: cat.categoryId || "",
-          menuType: menuType || ""
+          menuType: menuType || "",
+          descrizione: d.descrizione?.it || d.descrizione || ""
         });
       });
     });
@@ -500,11 +507,15 @@ app.post("/api/menu/translate", async (req, res) => {
   }
 });
 
-const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'];
+const FALLBACK_MODELS = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-pro', 'gemini-1.5-pro'];
 
 async function generateContentWithRetry(reqFactory: (model: string) => any) {
-  for (let attempt = 0; attempt < FALLBACK_MODELS.length; attempt++) {
-    const model = FALLBACK_MODELS[attempt];
+  const maxModelAttempts = 2;
+  const totalAttempts = FALLBACK_MODELS.length * maxModelAttempts;
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
+    const modelIndex = Math.floor(attempt / maxModelAttempts);
+    const modelAttempt = attempt % maxModelAttempts;
+    const model = FALLBACK_MODELS[modelIndex];
     try {
       return await getAI().models.generateContent(reqFactory(model));
     } catch (error: any) {
@@ -516,9 +527,11 @@ async function generateContentWithRetry(reqFactory: (model: string) => any) {
         error.message?.includes("NOT_FOUND") || error.message?.includes("404") || error.message?.includes("no longer available");
       
       if (isRateLimitOrUnavailableOrNotFound) {
-        if (attempt < FALLBACK_MODELS.length - 1) {
-          const waitMs = 5000; // max wait 5s to stay under proxy timeout
-          console.warn(`Gemini API error ${status} on ${model}, retry in ${waitMs}ms with ${FALLBACK_MODELS[attempt + 1]} (attempt ${attempt + 1}/${FALLBACK_MODELS.length})`);
+        if (attempt < totalAttempts - 1) {
+          const nextModelIndex = Math.floor((attempt + 1) / maxModelAttempts);
+          const nextModel = FALLBACK_MODELS[nextModelIndex] || "end of chain";
+          const waitMs = modelAttempt === 0 ? 2000 : 4000;
+          console.warn(`Gemini API error ${status} on ${model} (attempt ${modelAttempt + 1}/${maxModelAttempts}), retry in ${waitMs}ms with ${nextModel} (overall attempt ${attempt + 1}/${totalAttempts})`);
           await new Promise(r => setTimeout(r, waitMs));
           continue;
         }
@@ -530,8 +543,12 @@ async function generateContentWithRetry(reqFactory: (model: string) => any) {
 }
 
 async function callGeminiWithRetry(chatFactory: (model: string) => any, msgToSend: any) {
-  for (let attempt = 0; attempt < FALLBACK_MODELS.length; attempt++) {
-    const model = FALLBACK_MODELS[attempt];
+  const maxModelAttempts = 2;
+  const totalAttempts = FALLBACK_MODELS.length * maxModelAttempts;
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
+    const modelIndex = Math.floor(attempt / maxModelAttempts);
+    const modelAttempt = attempt % maxModelAttempts;
+    const model = FALLBACK_MODELS[modelIndex];
     try {
       const chat = chatFactory(model);
       return await chat.sendMessage({ message: msgToSend });
@@ -544,9 +561,11 @@ async function callGeminiWithRetry(chatFactory: (model: string) => any, msgToSen
         error.message?.includes("NOT_FOUND") || error.message?.includes("404") || error.message?.includes("no longer available");
       
       if (isRateLimitOrUnavailableOrNotFound) {
-        if (attempt < FALLBACK_MODELS.length - 1) {
-          const waitMs = 5000; // max wait 5s to stay under proxy timeout
-          console.warn(`Gemini error ${status} on ${model}, retry in ${waitMs}ms with ${FALLBACK_MODELS[attempt + 1]} (attempt ${attempt + 1}/${FALLBACK_MODELS.length})`);
+        if (attempt < totalAttempts - 1) {
+          const nextModelIndex = Math.floor((attempt + 1) / maxModelAttempts);
+          const nextModel = FALLBACK_MODELS[nextModelIndex] || "end of chain";
+          const waitMs = modelAttempt === 0 ? 2000 : 4000;
+          console.warn(`Gemini error ${status} on ${model} (attempt ${modelAttempt + 1}/${maxModelAttempts}), retry in ${waitMs}ms with ${nextModel} (overall attempt ${attempt + 1}/${totalAttempts})`);
           await new Promise(r => setTimeout(r, waitMs));
           continue;
         }
