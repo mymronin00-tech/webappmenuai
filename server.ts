@@ -174,14 +174,25 @@ function computeAllergeni(
     extractedIngs = ingredienti.it;
   }
   
-  const ings = [...extractedIngs];
+  const rawIngs: any[] = [...extractedIngs];
   if (context?.nome) {
-    ings.push(context.nome);
+    rawIngs.push(context.nome);
   }
   if (context?.descrizione) {
-    ings.push(context.descrizione);
+    rawIngs.push(context.descrizione);
   }
-  const ingsLower = ings.map(i => i.toLowerCase());
+  const ingsLower = rawIngs
+    .map(i => {
+      if (typeof i === "string") return i.toLowerCase();
+      if (i && typeof i === "object") {
+        // gestisce campi multilingua tipo {it: "...", en: "..."}
+        if (typeof i.it === "string") return i.it.toLowerCase();
+        const firstString = Object.values(i).find(v => typeof v === "string");
+        if (typeof firstString === "string") return firstString.toLowerCase();
+      }
+      return "";
+    })
+    .filter(s => s.length > 0);
 
   const mappature: Record<string, string[]> = {
     "glutine": ["spaghetti", "linguine", "troccoli", "tagliolino", "orecchiette", "ravioli", "lasagne", "gnocchi", "penne", "fettuccine", "pasta", "pane", "pizza", "mollica", "farina", "pangrattato", "crosta", "würstel", "mortadella", "ventricina", "calzone", "base pizza", "base bianca", "frittura"],
@@ -380,10 +391,18 @@ Return JSON strictly following the schema.
 - IMPORTANT: Extract all ingredients from the description and format them as an array of strings in the 'ingredienti' field.
 - IMPORTANT: The 'categoryId' in 'dishesByCategoryId' MUST EXACTLY MATCH the 'categories[].name.it' string (same spelling and case).
 
-ESTRAZIONE INGREDIENTI (sempre obbligatoria):
-- Se sotto il nome del piatto c'è una riga di ingredienti scritti (tipico nei menu pizza), estraili tutti come array di stringhe nel campo "ingredienti".
-- Se NON c'è riga sotto ma il nome del piatto contiene gli ingredienti (es. "Spaghetti alle cozze", "Polipo, patate e sedano fine", "Burratina e acciughe del Cantabrico"), estrai gli ingredienti dal nome stesso.
-- Mai lasciare ingredienti vuoto se è derivabile dal nome o dalla riga.
+ESTRAZIONE INGREDIENTI (OBBLIGATORIA, NON OPZIONALE):
+Per OGNI piatto devi popolare il campo "ingredienti" come array di stringhe. NON lasciarlo vuoto se è possibile derivarlo. Casi tipici:
+
+1. MENU PIZZA: il nome è grande (es. "MARGHERITA"), e SUBITO SOTTO c'è una riga con font più piccolo che elenca gli ingredienti separati da virgole (es. "POMODORO SAN MARZANO, FIOR DI LATTE, BASILICO"). DEVI estrarre questa riga sotto e metterla come array nell campo ingredienti.
+   Esempio: "MARGHERITA / POMODORO SAN MARZANO, FIOR DI LATTE, BASILICO" → nome: "MARGHERITA", ingredienti: ["pomodoro san marzano", "fior di latte", "basilico"]
+   Esempio: "AMERICANINO / POMODORO SAN MARZANO, FIOR DI LATTE, WÜRSTEL, PATATINE FRITTE" → ingredienti: ["pomodoro san marzano", "fior di latte", "würstel", "patatine fritte"]
+   Esempio: "BOLOGNA-LEUCA / BASE BIANCA, POMODORINO GIALLO, PROVOLA FRESCA. IN USCITA: MORTADELLA, GRANELLA DI PISTACCHI" → ingredienti: ["base bianca", "pomodorino giallo", "provola fresca", "mortadella", "granella di pistacchi"]
+   La parte "IN USCITA:" indica ingredienti aggiunti dopo cottura. Includili tutti nell'array.
+
+2. MENU RISTORANTE: gli ingredienti sono nel NOME STESSO del piatto. Esempi: "SPAGHETTI ALLE COZZE" → ingredienti: ["spaghetti", "cozze"]. "POLIPO, PATATE E SEDANO FINE" → ingredienti: ["polipo", "patate", "sedano"]. "BURRATINA E ACCIUGHE DEL CANTABRICO" → ingredienti: ["burratina", "acciughe del cantabrico"]. Se il nome contiene una parentesi con ingredienti (es. "CRUDITÉ (SCAMPI, GAMBERI, TONNO E RICCIOLA)"), estrai gli ingredienti DALLA PARENTESI.
+
+REGOLA CRITICA: lasciare ingredienti vuoto o assente quando la foto ne contiene chiaramente è un errore grave. Controlla sempre se c'è una riga sotto il nome o ingredienti nel nome stesso o nella parentesi prima di restituire un array vuoto.
 
 CLASSIFICAZIONE DIETETICA (regola CONSERVATIVA STRETTA - in dubbio = false):
 Compila i 4 booleani vegetariano, vegano, senza_glutine, senza_lattosio per OGNI piatto.
