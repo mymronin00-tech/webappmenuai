@@ -496,16 +496,79 @@ REGOLA DI SICUREZZA: se hai QUALSIASI dubbio sulla composizione, metti false. È
 
 // API: Resolve clarifications for draft menu
 app.post("/api/menu/resolve-clarifications", async (req, res) => {
+  req.setTimeout(300000); // 5 mins timeout
   try {
     const { draftMenu, replies } = req.body;
     if (!draftMenu) {
       return res.status(400).json({ error: "Missing draftMenu" });
     }
-    // Return draftMenu with questions resolved (cleared) so it moves to standard staging review state
-    const updatedDraft = {
-      ...draftMenu,
-      domande_di_chiarimento: []
-    };
+
+    const response = await generateContentWithRetry((modelName) => ({
+      model: modelName,
+      contents: {
+        parts: [
+          {
+            text: `Ho un menu in formato JSON e una lista di chiarimenti dal ristoratore. Applica i chiarimenti al menu modificando i campi corrispondenti dei piatti (prezzo, nome, ingredienti, descrizione). Restituisci il menu aggiornato nello stesso formato JSON ma con \`domande_di_chiarimento: []\` se tutte le domande sono state risolte. Se non riesci a interpretare una risposta, lasciala in \`domande_di_chiarimento\`.
+
+Menu JSON:
+${JSON.stringify(draftMenu, null, 2)}
+
+Chiarimenti:
+${JSON.stringify(replies, null, 2)}`
+          }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            categories: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: {
+                    type: Type.OBJECT,
+                    properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } },
+                    required: ["it"]
+                  }
+                }
+              }
+            },
+            dishesByCategoryId: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  categoryId: { type: Type.STRING },
+                  dishes: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        nome: { type: Type.OBJECT, properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } } },
+                        descrizione: { type: Type.OBJECT, properties: { it: { type: Type.STRING }, en: { type: Type.STRING }, fr: { type: Type.STRING }, de: { type: Type.STRING } } },
+                        prezzo: { type: Type.NUMBER },
+                        ingredienti: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        vegetariano: { type: Type.BOOLEAN },
+                        vegano: { type: Type.BOOLEAN },
+                        senza_glutine: { type: Type.BOOLEAN },
+                        senza_lattosio: { type: Type.BOOLEAN },
+                        allergeni: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            domande_di_chiarimento: { type: Type.ARRAY, items: { type: Type.STRING } }
+          }
+        }
+      }
+    }));
+
+    const updatedDraft = JSON.parse(response.text || "{}");
     res.json(updatedDraft);
   } catch (err: any) {
     console.error("Resolve Clarifications Error:", err);
