@@ -5,9 +5,17 @@ import { db } from "../lib/firebase";
 import clsx from "clsx";
 import { motion, AnimatePresence } from "framer-motion";
 
-export function ChatAIRistoratore({ restaurantId, activeMenu, menus, activePlans, onPlanAdded, onDirectAction }: any) {
+export function ChatAIRistoratore({ restaurantId, activeMenu, menus, activePlans, onPlanAdded, onDirectAction, selectedDishIds = [], draftMenu, setDraftMenu }: any) {
+  const [chatScope, setChatScope] = useState("all");
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState("");
+  const [processedProposals, setProcessedProposals] = useState<Record<string, 'approved' | 'rejected'>>({});
+
+  useEffect(() => {
+    if (selectedDishIds.length > 0) {
+      setChatScope("targeted");
+    }
+  }, [selectedDishIds]);
   const [isTyping, setIsTyping] = useState(false);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [attachedFileData, setAttachedFileData] = useState<string | null>(null);
@@ -111,37 +119,237 @@ export function ChatAIRistoratore({ restaurantId, activeMenu, menus, activePlans
     scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
   }, [messages, isTyping]);
 
+  function computeAllergeni(
+    ingredienti: any,
+    context?: { nome?: string; categoria?: string; menuType?: string; descrizione?: string }
+  ): string[] {
+    const allergensSet = new Set<string>();
+    
+    let extractedIngs: string[] = [];
+    if (Array.isArray(ingredienti)) {
+      extractedIngs = ingredienti;
+    } else if (ingredienti && typeof ingredienti === 'object') {
+      if (Array.isArray(ingredienti.it)) {
+        extractedIngs = ingredienti.it;
+      } else {
+        const firstArray = Object.values(ingredienti).find(v => Array.isArray(v));
+        if (Array.isArray(firstArray)) {
+          extractedIngs = firstArray as string[];
+        }
+      }
+    }
+    
+    const rawIngs: any[] = [...extractedIngs];
+    if (context?.nome) {
+      if (typeof context.nome === "string") rawIngs.push(context.nome);
+      else if (typeof context.nome === "object" && (context.nome as any).it) rawIngs.push((context.nome as any).it);
+    }
+    if (context?.descrizione) {
+      if (typeof context.descrizione === "string") rawIngs.push(context.descrizione);
+      else if (typeof context.descrizione === "object" && (context.descrizione as any).it) rawIngs.push((context.descrizione as any).it);
+    }
+    
+    const ingsLower = rawIngs
+      .map(i => {
+        if (typeof i === "string") return i.toLowerCase();
+        if (i && typeof i === "object") {
+          if (typeof i.it === "string") return i.it.toLowerCase();
+          const firstString = Object.values(i).find(v => typeof v === "string");
+          if (typeof firstString === "string") return firstString.toLowerCase();
+        }
+        return "";
+      })
+      .filter(s => s.length > 0);
+  
+    const mappature: Record<string, string[]> = {
+      "glutine": ["spaghetti", "linguine", "troccoli", "tagliolino", "orecchiette", "ravioli", "lasagne", "gnocchi", "penne", "fettuccine", "pasta", "pane", "pizza", "mollica", "farina", "pangrattato", "crosta", "würstel", "mortadella", "ventricina", "calzone", "base pizza", "base bianca", "frittura"],
+      "crostacei": ["scampi", "gamberi", "gambero", "granchio", "aragosta", "astice", "mazzancolle", "mare"],
+      "uova": ["uovo", "uova", "pasta all'uovo", "tagliolino", "maionese", "tiramisù", "frittata", "frittura"],
+      "pesce": ["tonno", "acciuga", "acciughe", "alici", "salmone", "branzino", "orata", "ricciola", "sgombro", "spigola", "colatura di alici", "pescato", "mare"],
+      "arachidi": ["arachidi", "arachide", "burro di arachidi"],
+      "soia": ["soia", "salsa di soia", "edamame", "tofu"],
+      "latte": ["latte", "mozzarella", "fior di latte", "burrata", "burratina", "ricotta", "scamorza", "provola", "pecorino", "parmigiano", "grana", "gorgonzola", "feta", "emmental", "burro", "panna", "mascarpone", "yogurt", "gelato", "spumone", "tiramisù", "formaggio", "cacio"],
+      "frutta_a_guscio": ["pistacchi", "pistacchio", "granella di pistacchio", "mandorle", "mandorla", "noci", "nocciole", "anacardi", "pinoli"],
+      "sedano": ["sedano"],
+      "senape": ["senape", "mostarda"],
+      "sesamo": ["sesamo", "semi di sesamo", "crosta di sesamo"],
+      "solfiti": ["vino", "aceto", "ventricina", "würstel", "mortadella", "speck", "salame"],
+      "lupini": ["lupino", "lupini"],
+      "molluschi": ["cozze", "vongole", "polipo", "polpo", "calamari", "calamaro", "seppia", "ostriche", "lumache di mare", "mare"]
+    };
+  
+    for (const ing of ingsLower) {
+      for (const [allergen, keywords] of Object.entries(mappature)) {
+        for (const keyword of keywords) {
+          if (ing.includes(keyword)) {
+            if (allergen === "lupini" && (ing.includes("vongola lupino") || ing.includes("vongole lupino"))) {
+              continue;
+            }
+            allergensSet.add(allergen);
+            break;
+          }
+        }
+      }
+    }
+  
+    const ctxString = `${context?.nome || ""} ${context?.categoria || ""} ${context?.menuType || ""}`.toLowerCase();
+    
+    if (ctxString.includes("pizza") || ctxString.includes("calzone")) {
+      allergensSet.add("glutine");
+    }
+    
+    const nomeLower = (typeof context?.nome === "string" ? context.nome : (context?.nome as any)?.it || "").toLowerCase();
+    const isFruitDessert = nomeLower.includes("frutta") || nomeLower.includes("sorbetto") || nomeLower.includes("ananas") || nomeLower.includes("melone");
+    
+    if (!isFruitDessert) {
+      if (ctxString.includes("dolc") || ctxString.includes("dessert") || ctxString.includes("tiramisù") || ctxString.includes("spumone")) {
+        allergensSet.add("glutine");
+        allergensSet.add("uova");
+        allergensSet.add("latte");
+      }
+    }
+  
+    return Array.from(allergensSet);
+  }
+
+  const handleApproveProposal = (proposal: any) => {
+    if (!setDraftMenu) return;
+    setDraftMenu((prevDraft: any) => {
+      if (!prevDraft) {
+        alert("Nessun menu in bozza (staging area) attivo da modificare. Carica un file per iniziare.");
+        return prevDraft;
+      }
+      
+      const updatedDishesByCategoryId = (prevDraft.dishesByCategoryId || []).map((group: any) => {
+        const updatedDishes = group.dishes.map((dish: any) => {
+          const isMatch = dish.id === proposal.dishId || 
+                          (dish.id && proposal.dishId && String(dish.id) === String(proposal.dishId)) ||
+                          (typeof dish.nome === "object" ? dish.nome?.it : dish.nome) === proposal.nome ||
+                          (typeof dish.name === "object" ? dish.name?.it : dish.name) === proposal.nome;
+
+          if (isMatch) {
+            const field = proposal.field;
+            const newValue = proposal.newValue;
+            let updatedDish = { ...dish };
+
+            if (field === "prezzo" || field === "price") {
+              updatedDish.prezzo = Number(newValue);
+              updatedDish.price = Number(newValue);
+            } else if (field === "ingredienti" || field === "ingredients") {
+              const arr = Array.isArray(newValue) ? newValue : [newValue];
+              if (typeof dish.ingredienti === "object" && dish.ingredienti !== null && !Array.isArray(dish.ingredienti)) {
+                updatedDish.ingredienti = { ...dish.ingredienti, it: arr };
+              } else {
+                updatedDish.ingredienti = arr;
+              }
+              if (typeof dish.ingredients === "object" && dish.ingredients !== null && !Array.isArray(dish.ingredients)) {
+                updatedDish.ingredients = { ...dish.ingredients, it: arr };
+              } else {
+                updatedDish.ingredients = arr;
+              }
+            } else if (field === "nome" || field === "name") {
+              if (typeof dish.nome === "object" && dish.nome !== null) {
+                updatedDish.nome = { ...dish.nome, it: String(newValue) };
+              } else {
+                updatedDish.nome = String(newValue);
+              }
+              if (typeof dish.name === "object" && dish.name !== null) {
+                updatedDish.name = { ...dish.name, it: String(newValue) };
+              } else {
+                updatedDish.name = String(newValue);
+              }
+            } else if (field === "descrizione" || field === "description") {
+              if (typeof dish.descrizione === "object" && dish.descrizione !== null) {
+                updatedDish.descrizione = { ...dish.descrizione, it: String(newValue) };
+              } else {
+                updatedDish.descrizione = String(newValue);
+              }
+              if (typeof dish.description === "object" && dish.description !== null) {
+                updatedDish.description = { ...dish.description, it: String(newValue) };
+              } else {
+                updatedDish.description = String(newValue);
+              }
+            } else {
+              updatedDish[field] = newValue;
+            }
+
+            // Recalculate allergens immediately!
+            const newAllergens = computeAllergeni(
+              updatedDish.ingredienti || updatedDish.ingredients,
+              {
+                nome: updatedDish.nome || updatedDish.name,
+                descrizione: updatedDish.descrizione || updatedDish.description,
+                categoria: group.categoryId,
+                menuType: prevDraft.tipo
+              }
+            );
+            
+            updatedDish.allergeni = newAllergens;
+            updatedDish.allergens = newAllergens;
+            return updatedDish;
+          }
+          return dish;
+        });
+
+        return {
+          ...group,
+          dishes: updatedDishes
+        };
+      });
+
+      return {
+        ...prevDraft,
+        dishesByCategoryId: updatedDishesByCategoryId
+      };
+    });
+  };
+
   const parseAIMessage = (rawText: string | undefined) => {
-    if (!rawText) return { text: "", azione_proposta: null };
+    if (!rawText) return { text: "", azione_proposta: null, proposalUi: null };
     
     // Estrai blocco ```json ... ```
     const jsonMatch = rawText.match(/```json\s*([\s\S]*?)```/);
     let azione_proposta = null;
+    let proposalUi = null;
     let cleanText = rawText;
     
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[1].trim());
-        azione_proposta = parsed.azione_proposta || parsed;
-        cleanText = rawText.replace(jsonMatch[0], '').trim();
+        if (parsed.type === "PROPOSAL_UI") {
+          proposalUi = parsed;
+          cleanText = parsed.message || "";
+        } else {
+          azione_proposta = parsed.azione_proposta || parsed;
+          cleanText = rawText.replace(jsonMatch[0], '').trim();
+        }
       } catch (e) {
         console.error('Failed to parse action JSON', e);
       }
     }
     
-    // Fallback search for bare JSON { "azione_proposta": ... }
-    if (!azione_proposta) {
-      const rawJsonMatch = rawText.match(/\{[\s\S]*"azione_proposta"[\s\S]*\}/);
+    // Fallback search for bare JSON
+    if (!azione_proposta && !proposalUi) {
+      const rawJsonMatch = rawText.match(/\{[\s\S]*\}/);
       if (rawJsonMatch) {
-        try {
-          const parsed = JSON.parse(rawJsonMatch[0]);
-          azione_proposta = parsed.azione_proposta;
-          cleanText = rawText.replace(rawJsonMatch[0], '').trim();
-        } catch (e) {}
+         try {
+           const parsed = JSON.parse(rawJsonMatch[0]);
+           if (parsed.type === "PROPOSAL_UI") {
+             proposalUi = parsed;
+             cleanText = parsed.message || "";
+           } else if (parsed.azione_proposta) {
+             azione_proposta = parsed.azione_proposta;
+             cleanText = rawText.replace(rawJsonMatch[0], '').trim();
+           } else {
+             // bare json action
+             azione_proposta = parsed;
+             cleanText = rawText.replace(rawJsonMatch[0], '').trim();
+           }
+         } catch (e) {}
       }
     }
     
-    return { text: cleanText, azione_proposta };
+    return { text: cleanText, azione_proposta, proposalUi };
   };
 
   const saveMessage = async (msg: any) => {
@@ -184,12 +392,17 @@ export function ChatAIRistoratore({ restaurantId, activeMenu, menus, activePlans
       setMessages(prev => prev.map(m => m === newUserMsg ? { ...m, id: userDocId } : m));
     }
 
+    // Determine target scope string
+    const mappedScope = chatScope === "all" ? "TUTTO_IL_MENU" : chatScope === "sections" ? "FILTRA_SEZIONI" : "SELEZIONE_MIRATA";
+
     try {
       const response = await fetch("/api/owner/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           message: userMsg, 
+          scope: mappedScope,
+          selectedDishIds,
           restaurantId,
           menus: (menus || []).map(simplifyMenu),
           activeMenuContext: simplifyMenu(activeMenu),
@@ -208,12 +421,13 @@ export function ChatAIRistoratore({ restaurantId, activeMenu, menus, activePlans
         throw new Error(typeof data.error === 'object' ? data.error.message || JSON.stringify(data.error) : data.error);
       }
       
-      const { text, azione_proposta } = parseAIMessage(data.text);
+      const { text, azione_proposta, proposalUi } = parseAIMessage(data.text);
 
       const newAiMsg = { 
         role: "assistant", 
         text: text || "Ok", 
         azione_proposta, 
+        proposalUi,
         createdAt: new Date().toISOString() 
       };
       
@@ -308,7 +522,7 @@ export function ChatAIRistoratore({ restaurantId, activeMenu, menus, activePlans
 
   return (
     <div className="flex flex-col h-[500px] border border-sand bg-white rounded-2xl overflow-hidden shadow-sm">
-      <div className="px-4 py-3 bg-sea flex justify-between items-center text-white">
+      <div className="px-4 py-3 bg-sea flex justify-between items-center text-white border-b border-sea-light/20">
         <div className="flex items-center gap-2">
            <Sparkles size={16} />
            <span className="font-serif text-sm">Assistente AI</span>
@@ -317,18 +531,120 @@ export function ChatAIRistoratore({ restaurantId, activeMenu, menus, activePlans
            {activeMenu ? `Menu: ${activeMenu.name}` : 'Nessun menu'}
         </div>
       </div>
+
+      {/* Scope Selector Bar / Ponte con la Chat */}
+      <div className="flex gap-1.5 p-2 bg-sand/30 border-b border-sand">
+        <button
+          onClick={() => setChatScope("all")}
+          className={clsx(
+            "flex-1 py-1.5 text-[9px] uppercase font-extrabold rounded-lg border text-center transition-all",
+            chatScope === "all"
+              ? "bg-sea text-white border-sea shadow"
+              : "bg-white border-sand text-olive hover:bg-sand/30"
+          )}
+        >
+          Tutto il Menu
+        </button>
+        <button
+          onClick={() => setChatScope("sections")}
+          className={clsx(
+            "flex-1 py-1.5 text-[9px] uppercase font-extrabold rounded-lg border text-center transition-all",
+            chatScope === "sections"
+              ? "bg-sea text-white border-sea shadow"
+              : "bg-white border-sand text-olive hover:bg-sand/30"
+          )}
+        >
+          Filtra Sezioni
+        </button>
+        <button
+          onClick={() => setChatScope("targeted")}
+          className={clsx(
+            "flex-1 py-1.5 text-[9px] uppercase font-extrabold rounded-lg border text-center transition-all flex items-center justify-center gap-1",
+            chatScope === "targeted"
+              ? "bg-sea text-white border-sea shadow"
+              : "bg-white border-sand text-olive hover:bg-sand/30"
+          )}
+        >
+          <span>Selezione Mirata</span>
+          {selectedDishIds.length > 0 && (
+            <span className="px-1.5 py-0.2 bg-red-500 text-white rounded-full text-[8px] font-black shadow-sm animate-pulse">
+              {selectedDishIds.length}
+            </span>
+          )}
+        </button>
+      </div>
       
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-sand/10">
         {messages.map((m, i) => (
           <div key={i} className={clsx("flex flex-col", m.role === "user" ? "items-end" : "items-start")}>
-            <div className={clsx("max-w-[85%] p-3 rounded-2xl text-sm", m.role === "user" ? "bg-sea text-white rounded-br-none" : "bg-white border border-sand rounded-bl-none text-olive")}>
+            <div className={clsx("max-w-[85%] p-3 rounded-2xl text-sm w-full", m.role === "user" ? "bg-sea text-white rounded-br-none max-w-[85%] ml-auto" : "bg-white border border-sand rounded-bl-none text-olive")}>
                 {m.hasAttachment && (
                   <div className="flex items-center gap-2 mb-2 p-2 bg-black/10 rounded-lg text-xs">
                      <FileText size={14} />
                      <span className="truncate">{m.attachmentName || "Allegato"}</span>
                   </div>
                 )}
-                {m.text}
+                <div className="prose prose-sm font-sans">{m.text}</div>
+
+                {/* VISUAL PROPOSALS CARDS */}
+                {m.proposalUi && m.proposalUi.proposals && m.proposalUi.proposals.length > 0 && (
+                  <div className="mt-3 space-y-3 font-sans">
+                    {m.proposalUi.proposals.map((proposal: any, pIdx: number) => {
+                      const statusKey = `${i}_${pIdx}`;
+                      const status = processedProposals[statusKey];
+
+                      let changeDetails = "";
+                      if (proposal.field === "prezzo" || proposal.field === "price") {
+                        changeDetails = `Prezzo: €${proposal.oldValue} ➔ €${proposal.newValue}`;
+                      } else if (proposal.field === "ingredienti" || proposal.field === "ingredients") {
+                        const oldIngs = Array.isArray(proposal.oldValue) ? proposal.oldValue.join(", ") : String(proposal.oldValue || "Nessuno");
+                        const newIngs = Array.isArray(proposal.newValue) ? proposal.newValue.join(", ") : String(proposal.newValue || "Nessuno");
+                        changeDetails = `Ingredienti: [${oldIngs}] ➔ [${newIngs}]`;
+                      } else {
+                        changeDetails = `${proposal.field}: "${proposal.oldValue || 'Vuoto'}" ➔ "${proposal.newValue || 'Vuoto'}"`;
+                      }
+
+                      return (
+                        <div key={pIdx} className="bg-sand/30 border border-sand p-3 rounded-xl space-y-2 text-olive shadow-xs">
+                          <p className="text-xs font-serif font-bold text-sea">{proposal.nome || "Piatto senza nome"}</p>
+                          <p className="text-xs text-olive bg-white p-2.5 rounded-lg border border-sand-dark/10 font-mono break-all leading-relaxed">
+                            {changeDetails}
+                          </p>
+                          
+                          {!status ? (
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => {
+                                  handleApproveProposal(proposal);
+                                  setProcessedProposals(prev => ({ ...prev, [statusKey]: 'approved' }));
+                                }}
+                                className="flex-1 py-1.5 px-3 bg-green-600 hover:bg-green-700 active:scale-95 transition-all text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1 cursor-pointer"
+                              >
+                                ✓ Approva
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setProcessedProposals(prev => ({ ...prev, [statusKey]: 'rejected' }));
+                                }}
+                                className="py-1.5 px-3 border border-sand hover:bg-red-50 active:scale-95 transition-all text-red-600 font-medium text-xs rounded-lg cursor-pointer"
+                              >
+                                ✕ Rifiuta
+                              </button>
+                            </div>
+                          ) : status === 'approved' ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-green-700 bg-green-50 px-2 py-1 rounded-md border border-green-200">
+                              ✓ Modifica Approvata
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-500 bg-red-50 px-2 py-1 rounded-md border border-red-200">
+                              ✕ Modifica Rifiutata
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
             </div>
             {m.azione_proposta && m.role === "assistant" && (
                 <div className="mt-2 p-3 bg-white border border-sand rounded-xl text-sm flex flex-col gap-3 max-w-[95%] shadow-sm w-full">

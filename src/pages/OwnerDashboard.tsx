@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { auth, db, storage } from "../lib/firebase";
 import { collection, doc, getDoc, getDocs, setDoc, updateDoc, addDoc, query, where, orderBy, deleteDoc, serverTimestamp } from "firebase/firestore";
-import { Plus, Upload, Save, Eye, QrCode, LogOut, Loader2, CheckCircle2, ChevronRight, Utensils, MessageSquare, Clock, MoreVertical, Edit2, Trash2, Globe } from "lucide-react";
+import { Plus, Upload, Save, Eye, QrCode, LogOut, Loader2, CheckCircle2, ChevronRight, Utensils, MessageSquare, Clock, MoreVertical, Edit2, Trash2, Globe, Sparkles } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import clsx from "clsx";
 import { ChatAIRistoratore } from "../components/ChatAIRistoratore";
@@ -34,6 +34,12 @@ export default function OwnerDashboard() {
   const [dropdownState, setDropdownState] = useState<{ id: string, m: any, top: number, right: number } | null>(null);
   const [menuToDelete, setMenuToDelete] = useState<any>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Staging area & visual draft states
+  const [draftMenu, setDraftMenu] = useState<any>(null);
+  const [selectedDishIds, setSelectedDishIds] = useState<string[]>([]);
+  const [clarificationReplies, setClarificationReplies] = useState<Record<number, string>>({});
+  const [submittingReplies, setSubmittingReplies] = useState(false);
 
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingDish, setEditingDish] = useState<any>(null);
@@ -195,7 +201,111 @@ export default function OwnerDashboard() {
     setPlans(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any)));
   };
 
-  const menuData = menus.find(m => m.id === activeMenuId);
+  const computedDraftMenu = draftMenu ? {
+    id: "draft_menu",
+    name: draftMenu.name || newMenuName,
+    tipo: draftMenu?.tipo || newMenuType,
+    isPublished: false,
+    isDraft: true,
+    categories: (draftMenu.categories || []).map((cat: any, cIdx: number) => {
+      const catNameStr = cat.name?.it || cat.name || "";
+      const catNameObj = typeof cat.name === "object" ? cat.name : { it: cat.name || "" };
+      const matchingGroup = (draftMenu.dishesByCategoryId || []).find(
+        (g: any) => (g.categoryId || "").toLowerCase().trim() === catNameStr.toLowerCase().trim()
+      );
+      const dishes = (matchingGroup?.dishes || []).map((d: any, dIdx: number) => ({
+        id: d.id || `draft_dish_${cIdx}_${dIdx}`,
+        ...d,
+        isAvailable: d.isAvailable !== false
+      }));
+      return {
+        id: cat.id || `draft_cat_${cIdx}`,
+        name: catNameObj,
+        dishes
+      };
+    }),
+    domande_di_chiarimento: draftMenu.domande_di_chiarimento || []
+  } : null;
+
+  const menuData = computedDraftMenu || menus.find(m => m.id === activeMenuId);
+
+  const handleResolveClarifications = async () => {
+    if (!draftMenu) return;
+    setSubmittingReplies(true);
+    try {
+      const response = await fetch("/api/menu/resolve-clarifications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          draftMenu,
+          replies: clarificationReplies
+        })
+      });
+      if (!response.ok) {
+        throw new Error("Errore durante la risoluzione dei dubbi sul server.");
+      }
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      setDraftMenu(data);
+      setClarificationReplies({});
+    } catch (err: any) {
+      alert("Errore: " + err.message);
+    } finally {
+      setSubmittingReplies(false);
+    }
+  };
+
+  const handleSaveDraftToFirestore = async () => {
+    if (!restaurant || !draftMenu) return;
+    try {
+      setParsingMenu(true);
+      setParseStatus("Salvataggio nel database...");
+
+      // Save to Firestore
+      const menuRef = await addDoc(collection(db, `ristoranti/${restaurant.id}/menus`), {
+        name: draftMenu.name || newMenuName,
+        tipo: draftMenu.tipo || newMenuType,
+        isPublished: false,
+        createdAt: new Date().toISOString(),
+        rawExtracted: draftMenu
+      });
+
+      // Create categories and dishes
+      const computed = computedDraftMenu || draftMenu;
+      for (const cat of computed.categories) {
+        const catRef = await addDoc(collection(db, `ristoranti/${restaurant.id}/menus/${menuRef.id}/categorie`), {
+          name: cat.name,
+          order: 0
+        });
+        
+        for (const dish of cat.dishes) {
+          const { id, isAvailable, ...cleanDish } = dish;
+          await addDoc(collection(db, `ristoranti/${restaurant.id}/menus/${menuRef.id}/categorie/${catRef.id}/piatti`), {
+            ...cleanDish,
+            isAvailable: isAvailable !== false
+          });
+        }
+      }
+
+      await fetchMenus(restaurant.id);
+
+      // Trigger Onboarding Chat BEFORE setting active menu
+      setParseStatus("Traduzione in corso...");
+      await triggerOnboardingChat(menuRef.id, draftMenu);
+      
+      setActiveMenuId(menuRef.id);
+      setDraftMenu(null);
+      setSelectedDishIds([]);
+      setParseStatus("Carica Foto o PDF");
+      alert("Menu validato e salvato correttamente nel database reale!");
+    } catch (e: any) {
+      alert("Errore durante il salvataggio: " + e.message);
+    } finally {
+      setParsingMenu(false);
+    }
+  };
 
   const createRestaurant = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -294,38 +404,10 @@ export default function OwnerDashboard() {
         }
       }
 
-      // Save to Firestore
-      const menuRef = await addDoc(collection(db, `ristoranti/${restaurant.id}/menus`), {
-        name: newMenuName,
-        tipo: newMenuType,
-        isPublished: false,
-        createdAt: new Date().toISOString(),
-        rawExtracted: extracted
-      });
-
-      // Create categories and dishes
-      for (const cat of extracted.categories) {
-        const catRef = await addDoc(collection(db, `ristoranti/${restaurant.id}/menus/${menuRef.id}/categorie`), {
-          name: cat.name,
-          order: 0
-        });
-        
-        const relevantDishes = extracted.dishesByCategoryId?.find((d: any) => d.categoryId?.toLowerCase().trim() === cat.name?.it?.toLowerCase().trim())?.dishes || [];
-        for (const dish of relevantDishes) {
-          await addDoc(collection(db, `ristoranti/${restaurant.id}/menus/${menuRef.id}/categorie/${catRef.id}/piatti`), {
-            ...dish,
-            isAvailable: true
-          });
-        }
-      }
-
-      await fetchMenus(restaurant.id);
-
-      // Trigger Onboarding Chat BEFORE setting active menu
-      setParseStatus("Traduzione in corso...");
-      await triggerOnboardingChat(menuRef.id, extracted);
-      
-      setActiveMenuId(menuRef.id);
+      // Load into local draftMenu status instead of writing directly to Firestore database
+      setDraftMenu(extracted);
+      setSelectedDishIds([]);
+      setClarificationReplies({});
 
     } catch (error: any) {
       console.error(error);
@@ -615,7 +697,7 @@ export default function OwnerDashboard() {
 
   const handleSaveDish = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!restaurant || !activeMenuId || !editingDish || !editingDishCategory) return;
+    if (!restaurant || !editingDish || !editingDishCategory) return;
     
     if (!((typeof editingDish.nome === "object" ? editingDish.nome?.it : editingDish.nome) || (typeof editingDish.name === "object" ? editingDish.name?.it : editingDish.name))) {
       alert("Il nome (IT) è obbligatorio"); return;
@@ -623,6 +705,43 @@ export default function OwnerDashboard() {
     if ((editingDish.prezzo === undefined || editingDish.prezzo === null) && (editingDish.price === undefined || editingDish.price === null)) {
       alert("Il prezzo è obbligatorio"); return;
     }
+
+    if (draftMenu) {
+      const isNew = !editingDish.id;
+      const targetCatObj = computedDraftMenu?.categories.find((c: any) => c.id === editingDishCategory);
+      const targetCatName = targetCatObj?.name?.it;
+      
+      const updatedDishesByCategoryId = [...(draftMenu.dishesByCategoryId || [])];
+      let catGroup = updatedDishesByCategoryId.find((g: any) => g.categoryId?.toLowerCase().trim() === targetCatName?.toLowerCase().trim());
+      if (!catGroup) {
+        catGroup = { categoryId: targetCatName, dishes: [] };
+        updatedDishesByCategoryId.push(catGroup);
+      }
+      
+      if (isNew) {
+        const tempId = `draft_dish_${Date.now()}`;
+        catGroup.dishes.push({
+          id: tempId,
+          ...editingDish,
+          isAvailable: true
+        });
+      } else {
+        catGroup.dishes = catGroup.dishes.map((d: any) => 
+          d.id === editingDish.id ? { ...d, ...editingDish } : d
+        );
+      }
+      
+      setDraftMenu({
+        ...draftMenu,
+        dishesByCategoryId: updatedDishesByCategoryId
+      });
+      setIsEditModalOpen(false);
+      setEditingDish(null);
+      setEditingDishCategory(null);
+      return;
+    }
+
+    if (!activeMenuId) return;
 
     try {
       const isNew = !editingDish.id;
@@ -670,8 +789,36 @@ export default function OwnerDashboard() {
   };
 
   const handleToggleDishAvailability = async (catId: string, dish: any) => {
-    if (!restaurant || !activeMenuId) return;
+    if (!restaurant) return;
     
+    if (draftMenu) {
+      const targetCatObj = computedDraftMenu?.categories.find((c: any) => c.id === catId);
+      const targetCatName = targetCatObj?.name?.it;
+      const isCurrentlyAvailable = dish.isAvailable !== false;
+      
+      const updatedDishesByCategoryId = (draftMenu.dishesByCategoryId || []).map((g: any) => {
+        if (g.categoryId?.toLowerCase().trim() === targetCatName?.toLowerCase().trim()) {
+          return {
+            ...g,
+            dishes: g.dishes.map((d: any) => 
+              d.id === dish.id || (d.nome?.it === dish.nome?.it && !d.id)
+                ? { ...d, isAvailable: !isCurrentlyAvailable }
+                : d
+            )
+          };
+        }
+        return g;
+      });
+      
+      setDraftMenu({
+        ...draftMenu,
+        dishesByCategoryId: updatedDishesByCategoryId
+      });
+      return;
+    }
+
+    if (!activeMenuId) return;
+
     try {
       const isCurrentlyAvailable = dish.isAvailable !== false;
       await updateDoc(doc(db, `ristoranti/${restaurant.id}/menus/${activeMenuId}/categorie/${catId}/piatti`, dish.id), {
@@ -684,9 +831,32 @@ export default function OwnerDashboard() {
   };
 
   const handleDeleteDish = async (catId: string, dish: any) => {
-    if (!restaurant || !activeMenuId) return;
+    if (!restaurant) return;
     if (!window.confirm(`Sei sicuro di voler eliminare "${dish.nome?.it || dish.name?.it || "questo piatto"}"?`)) return;
     
+    if (draftMenu) {
+      const targetCatObj = computedDraftMenu?.categories.find((c: any) => c.id === catId);
+      const targetCatName = targetCatObj?.name?.it;
+      
+      const updatedDishesByCategoryId = (draftMenu.dishesByCategoryId || []).map((g: any) => {
+        if (g.categoryId?.toLowerCase().trim() === targetCatName?.toLowerCase().trim()) {
+          return {
+            ...g,
+            dishes: g.dishes.filter((d: any) => d.id !== dish.id) // Filter by dish.id
+          };
+        }
+        return g;
+      });
+      
+      setDraftMenu({
+        ...draftMenu,
+        dishesByCategoryId: updatedDishesByCategoryId
+      });
+      return;
+    }
+
+    if (!activeMenuId) return;
+
     try {
       await deleteDoc(doc(db, `ristoranti/${restaurant.id}/menus/${activeMenuId}/categorie/${catId}/piatti`, dish.id));
       await fetchMenus(restaurant.id);
@@ -795,6 +965,9 @@ export default function OwnerDashboard() {
             activePlans={plans} 
             onPlanAdded={() => fetchPlans(restaurant.id)} 
             onDirectAction={handleDirectAction} 
+            selectedDishIds={selectedDishIds}
+            draftMenu={draftMenu}
+            setDraftMenu={setDraftMenu}
           />
         </div>
 
@@ -884,17 +1057,105 @@ export default function OwnerDashboard() {
               <div className="text-center py-12 text-olive bg-sand/20 rounded-2xl border border-dashed border-sand">
                 Seleziona o crea un menu a sinistra.
               </div>
+            ) : draftMenu && draftMenu.domande_di_chiarimento && draftMenu.domande_di_chiarimento.length > 0 ? (
+              /* HUB DI VALIDAZIONE UNIFICATO */
+              <div className="space-y-6">
+                <div className="bg-orange-50/50 border border-orange-200/60 p-6 rounded-3xl space-y-4 shadow-xs">
+                  <div className="flex items-start gap-3">
+                     <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-orange-100 text-orange-600 shadow-sm">
+                       <Sparkles size={20} className="animate-pulse" />
+                     </span>
+                     <div>
+                       <h3 className="text-base font-serif text-sea font-bold">Hub di Validazione dell'AI</h3>
+                       <p className="text-xs text-olive">Il nostro sistema di parsing ha rilevato dei dubbi sul tuo menu. Chiarisci queste incertezze per caricarlo completamente:</p>
+                     </div>
+                  </div>
+
+                  <div className="space-y-4">
+                     {draftMenu.domande_di_chiarimento.map((domanda: string, qIdx: number) => (
+                        <div key={qIdx} className="bg-white p-4 border border-sand rounded-2xl space-y-2 shadow-xs">
+                           <p className="text-[10px] font-bold uppercase tracking-wider text-olive/50 font-mono">Domanda {qIdx + 1}</p>
+                           <p className="text-xs font-serif text-olive bg-sand/20 p-3 rounded-lg flex items-start gap-1">
+                             <span className="text-orange-500 font-bold font-mono">?</span>
+                             {domanda}
+                           </p>
+                           <input
+                             type="text"
+                             placeholder="Scrivi qui la tua risposta o chiarimento..."
+                             value={clarificationReplies[qIdx] || ""}
+                             onChange={(e) => setClarificationReplies(prev => ({ ...prev, [qIdx]: e.target.value }))}
+                             className="w-full text-xs p-3 rounded-xl border border-sand bg-sand/5 outline-none focus:border-sea focus:bg-white transition-all font-sans"
+                           />
+                        </div>
+                     ))}
+                  </div>
+
+                  <div className="flex gap-3 justify-end pt-2">
+                     <button
+                       onClick={() => {
+                         if (window.confirm("Sei sicuro di voler scartare la bozza corrente?")) {
+                           setDraftMenu(null);
+                           setClarificationReplies({});
+                         }
+                       }}
+                       className="px-4 py-2 text-xs font-semibold rounded-xl border border-sand text-olive hover:bg-sand/30 transition-all font-mono"
+                     >
+                       Scarta Bozza
+                     </button>
+                     <button
+                       onClick={handleResolveClarifications}
+                       disabled={submittingReplies}
+                       className="px-5 py-2.5 text-xs font-bold text-white bg-sea hover:bg-sea-light transition-all rounded-xl shadow-lg flex items-center gap-1.5 disabled:opacity-50"
+                     >
+                       {submittingReplies && <Loader2 className="animate-spin" size={12} />}
+                       Applica e Rigenera
+                     </button>
+                  </div>
+                </div>
+              </div>
             ) : (
               <div className="space-y-4">
-                <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-sand">
-                   <div>
-                      <p className="font-bold flex items-center gap-2">Stato: <span className={clsx("px-2 py-0.5 rounded-md text-[10px]", menuData.isPublished ? "bg-green-100 text-green-700" : "bg-sand text-olive")}>{menuData.isPublished ? "PUBBLICATO" : "BOZZA"}</span></p>
-                      <p className="text-xs text-olive mt-1">Imposta se visibile per i clienti ai tavoli.</p>
-                   </div>
-                   <button onClick={async () => { await updateDoc(doc(db, `ristoranti/${restaurant.id}/menus`, menuData.id), { isPublished: !menuData.isPublished }); fetchMenus(restaurant.id); }} className={clsx("px-4 py-2 rounded-lg font-medium transition-all text-sm", menuData.isPublished ? "bg-orange-50 text-orange-600 border border-orange-200" : "bg-green-50 text-green-600 border border-green-200")}>
-                     {menuData.isPublished ? "Sospendi" : "Pubblica"}
-                   </button>
-                </div>
+                {draftMenu && (
+                  <div className="bg-sea/5 border border-sea/20 p-5 rounded-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-sm">
+                     <div className="flex items-start gap-2.5">
+                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-sea/10 text-sea mt-0.5 animate-pulse">
+                         <Sparkles size={12} />
+                       </span>
+                       <div>
+                         <p className="font-serif text-sm font-bold text-sea">Staging Area: Menu Pronto per la Conferma</p>
+                         <p className="text-[11px] text-olive/70 mt-0.5 leading-relaxed">Il menu è stato estratto correttamente dall'AI. Fai qualsiasi modifica visiva, seleziona i piatti che desideri, oppure premi Conferma per completare!</p>
+                       </div>
+                     </div>
+                     <div className="flex gap-2 shrink-0">
+                        <button
+                          onClick={() => { if (window.confirm("Vuoi scartare questa bozza?")) { setDraftMenu(null); setSelectedDishIds([]); } }}
+                          className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-sand text-olive hover:bg-sand/30 transition-all font-sans"
+                        >
+                          Annulla
+                        </button>
+                        <button
+                          onClick={handleSaveDraftToFirestore}
+                          disabled={parsingMenu}
+                          className="px-4 py-1.5 bg-sea hover:bg-sea-light text-white font-bold text-xs rounded-lg shadow-sm flex items-center gap-1.5 transition-all disabled:opacity-50 font-sans"
+                        >
+                          {parsingMenu && <Loader2 className="animate-spin" size={12} />}
+                          Conferma e Salva
+                        </button>
+                     </div>
+                  </div>
+                )}
+
+                {!draftMenu && (
+                  <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-sand">
+                     <div>
+                        <p className="font-bold flex items-center gap-2">Stato: <span className={clsx("px-2 py-0.5 rounded-md text-[10px]", menuData.isPublished ? "bg-green-100 text-green-700" : "bg-sand text-olive")}>{menuData.isPublished ? "PUBBLICATO" : "BOZZA"}</span></p>
+                        <p className="text-xs text-olive mt-1">Imposta se visibile per i clienti ai tavoli.</p>
+                     </div>
+                     <button onClick={async () => { await updateDoc(doc(db, `ristoranti/${restaurant.id}/menus`, menuData.id), { isPublished: !menuData.isPublished }); fetchMenus(restaurant.id); }} className={clsx("px-4 py-2 rounded-lg font-medium transition-all text-sm", menuData.isPublished ? "bg-orange-50 text-orange-600 border border-orange-200" : "bg-green-50 text-green-600 border border-green-200")}>
+                       {menuData.isPublished ? "Sospendi" : "Pubblica"}
+                     </button>
+                  </div>
+                )}
 
                 <div className="space-y-8 mt-6">
                   <h3 className="font-serif text-2xl text-sea border-b border-sand pb-2">Categorie e Prodotti ({menuData.tipo})</h3>
@@ -918,9 +1179,23 @@ export default function OwnerDashboard() {
                                 <div className="flex justify-between items-start gap-2">
                                    <div className="flex-1">
                                       <div className="flex items-start justify-between gap-2">
-                                         <p className={`font-serif text-base leading-tight text-sea group-hover:text-sea-light transition-colors ${d.isAvailable === false ? 'opacity-50 line-through' : ''}`}>
-                                             {getLocText(d.nome || d.name) || "Senza Nome"}
-                                         </p>
+                                         <div className="flex items-center gap-2 flex-1 min-w-0">
+                                            <input
+                                               type="checkbox"
+                                               checked={selectedDishIds.includes(d.id)}
+                                               onChange={(e) => {
+                                                 if (e.target.checked) {
+                                                   setSelectedDishIds(prev => [...prev, d.id]);
+                                                 } else {
+                                                   setSelectedDishIds(prev => prev.filter(id => id !== d.id));
+                                                 }
+                                               }}
+                                               className="h-4 w-4 shrink-0 rounded border-sand text-sea focus:ring-sea cursor-pointer accent-sea"
+                                            />
+                                            <p className={`font-serif text-base leading-tight text-sea group-hover:text-sea-light transition-colors truncate ${d.isAvailable === false ? 'opacity-50 line-through' : ''}`}>
+                                                {getLocText(d.nome || d.name) || "Senza Nome"}
+                                            </p>
+                                         </div>
                                          <button
                                              onClick={(e) => { e.stopPropagation(); handleToggleDishAvailability(cat.id, d); }}
                                              className={`mt-1 relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${d.isAvailable !== false ? 'bg-sea' : 'bg-sand cursor-pointer'}`}

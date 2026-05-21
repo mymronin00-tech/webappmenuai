@@ -494,6 +494,25 @@ REGOLA DI SICUREZZA: se hai QUALSIASI dubbio sulla composizione, metti false. È
   }
 });
 
+// API: Resolve clarifications for draft menu
+app.post("/api/menu/resolve-clarifications", async (req, res) => {
+  try {
+    const { draftMenu, replies } = req.body;
+    if (!draftMenu) {
+      return res.status(400).json({ error: "Missing draftMenu" });
+    }
+    // Return draftMenu with questions resolved (cleared) so it moves to standard staging review state
+    const updatedDraft = {
+      ...draftMenu,
+      domande_di_chiarimento: []
+    };
+    res.json(updatedDraft);
+  } catch (err: any) {
+    console.error("Resolve Clarifications Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // API: Batch translate menu
 app.post("/api/menu/translate", async (req, res) => {
   req.setTimeout(300000); // 5 mins timeout
@@ -605,7 +624,7 @@ app.post("/api/owner/chat", async (req, res) => {
   const keepAliveInterval = setInterval(() => { res.write(" "); }, 10000);
 
   try {
-    const { message, restaurantId, activeMenuContext, menus, history, activePlans, trigger, parse_result, fileData, mimeType } = req.body;
+    const { message, scope, selectedDishIds, restaurantId, activeMenuContext, menus, history, activePlans, trigger, parse_result, fileData, mimeType } = req.body;
     
     let instructions = `Sei l'assistente AI di MenuLive. Aiuti il proprietario di un ristorante a gestire il suo menu digitale in italiano. Tono educato medio, frasi brevi e concrete.
         
@@ -613,9 +632,39 @@ app.post("/api/owner/chat", async (req, res) => {
     Tutti i Menu del Ristorante: ${JSON.stringify(menus)}
     Menu Attivo al momento: ${JSON.stringify(activeMenuContext)}
     Pianificazioni aperte: ${JSON.stringify(activePlans)}
-    
-    REGOLE FONDAMENTALI PER LE AZIONI:
-    1. Quando proponi un'azione che modifica il menu, includi alla fine del tuo messaggio un blocco JSON nel formato:
+    Scope della chat: ${scope || "TUTTO_IL_MENU"}
+    ID Piatti Selezionati: ${JSON.stringify(selectedDishIds || [])}
+    `;
+
+    if (scope === 'SELEZIONE_MIRATA') {
+      instructions += `\n\nATTENZIONE: L'utente ha selezionato solo i piatti con questi ID: ${(selectedDishIds || []).join(',')}. Ignora tutti gli altri piatti del menu. Applica la richiesta esclusivamente a questi ID. Non toccare od offrire modifiche per nessun altro ID o nome non incluso in questo elenco.`;
+    }
+
+    instructions += `\n\nREGOLE DI MODIFICA RIGIDE (COMPLIANCE ENFORCEMENT):
+    Se l'utente ti chiede o intende apportare una modifica, variazione di ingredienti, aggiornamento prezzi, cambio nome o variazione di descrizione di qualunque piatto presente nel menu, DEVI BLOCCARE tassativamente qualsiasi output in testo libero ed emettere ESCLUSIVAMENTE un blocco JSON avente questo preciso schema strutturato:
+    \`\`\`json
+    {
+      "type": "PROPOSAL_UI",
+      "message": "Scrivi qui un breve testo cortese di introduzione in cui spieghi i dettagli delle modifiche proposte (es: 'Ecco la variazione di prezzo per la Margherita')",
+      "proposals": [
+        {
+          "dishId": "ID effettivo del piatto da modificare (es. draft_dish_0_2)",
+          "nome": "Il nome originale o aggiornato del piatto",
+          "field": "prezzo" | "ingredienti" | "nome" | "descrizione",
+          "oldValue": valore_originale,
+          "newValue": valore_nuovo
+        }
+      ]
+    }
+    \`\`\`
+    REGOLE DETTAGLIATE SUI CAMPI DEL JSON:
+    1. "field": deve essere esattamente "prezzo" se è il prezzo, "ingredienti" se si modificano gli ingredienti, "nome" per il titolo, "descrizione" per la descrizione.
+    2. "newValue" e "oldValue" per gli ingredienti devono essere array di stringhe (es: oldValue: ["pomodoro"], newValue: ["pomodoro", "basilico"]). Per prezzi, devono essere dei numeri (es. 10, 11).
+    3. Non generare alcuna conversazione o spiegazione al di fuori del blocco JSON se l'azione implica una modifica a un piatto del menu.
+    4. Se l'utente sta solo conversando o ponendo una domanda informativa senza ordinare modifiche, rispondi con un normale testo descrittivo.
+
+    REGOLE DI BACKUP PER ALTRE AZIONI:
+    1. Quando proponi un'azione che modifica il menu intero (es. eliminazione menu o creazione menu intero), includi alla fine del tuo messaggio un blocco JSON nel formato:
     \`\`\`json
     {
       "azione_proposta": {
@@ -627,12 +676,9 @@ app.post("/api/owner/chat", async (req, res) => {
       }
     }
     \`\`\`
-    2. Il tuo testo conversazionale deve essere autosufficiente, SENZA fare riferimento al JSON sottostante o dire "come vedi nel JSON". Scrivi naturalmente.
-    3. Se chiedi conferma, NON anticipare che hai "eliminato", "aggiornato" o "pianificato". Dì solo cosa STAI PER fare. L'esito verrà confermato dopo il click di conferma del ristoratore. (es: "Eliminerò il menu delle pizze. Confermi?")
-    4. Riconosci comandi temporali (oggi, domani, per il weekend) e proponili come schedulazioni ("schedule_*"), non come dirette ("direct_*").
-    5. Massimo UN blocco JSON per messaggio. Deve essere racchiuso in fence \`\`\`json.
-    6. Se chiedi chiarimenti, falli uno alla volta. Non fare questionari.
-    7. Quando aggiungi o modifichi un piatto, INCLUDI l'estrazione degli "ingredienti" (array di stringhe) se menzionati, separandoli dalla descrizione.`;
+    2. Il tuo testo conversazionale deve essere autosufficiente, SENZA fare riferimento al JSON sottostante.
+    3. Se chiedi conferma, NON anticipare che hai "eliminato" o "aggiornato". Dì solo cosa STAI PER fare.
+    4. Riconosci comandi temporali (oggi, domani, per il weekend) e proponili come schedulazioni ("schedule_*"), non come dirette ("direct_*").`;
 
     if (trigger === "post_parsing" && parse_result) {
       instructions += `\n\nL'utente ha appena caricato un menu. Stato dettagliato del parsing: ${JSON.stringify(parse_result)}. Genera un messaggio di onboarding proattivo seguendo QUESTE regole:
@@ -727,13 +773,19 @@ app.post("/api/customer/chat", async (req, res) => {
     
     // Using Gemini Flash for cost-effective chat
     const msgToSend = message;
-    const result = await callGeminiWithRetry(
-      (modelName) => getAI().chats.create({
-        model: modelName,
-        history: formattedHistory,
-        config: {
-          temperature: 0.2,
-          systemInstruction: `Sei l'assistente menu del ristorante. Hai accesso SOLO ai dati nel JSON menuContext: ${JSON.stringify(menuContext)}
+
+    const userLang = (req.body.lang || "it").toUpperCase();
+
+    const languageEnforcement: Record<string, string> = {
+      IT: "L'utente sta visualizzando l'interfaccia in ITALIANO. Rispondi SEMPRE e tassativamente in italiano. Non usare altre lingue.",
+      EN: "The user is viewing the interface in ENGLISH. You MUST reply strictly in English. Do not use Italian or any other language.",
+      FR: "L'interfaccia è in FRANCESE. Rispondi SEMPRE e tassativamente in francese. Non usare l'italiano.",
+      DE: "L'interfaccia è in TEDESCO. Rispondi SEMPRE e tassativamente in tedesco. Non usare l'italiano."
+    };
+
+    const systemInstruction = `${languageEnforcement[userLang] || languageEnforcement.IT}
+
+Sei l'assistente menu del ristorante. Hai accesso SOLO ai dati nel JSON menuContext: ${JSON.stringify(menuContext)}
 
 REGOLA FERREA — RISTREZIONI ALIMENTARI E ALLERGIE:
 Quando l'utente menziona dieta vegetariana, vegana, celiachia, intolleranza al lattosio, o qualsiasi allergia, NON DEDURRE MAI dai nomi dei piatti o ingredienti.
@@ -751,7 +803,15 @@ Per chat sui vini (sommelier): conosci SOLO i dati enologici nel vino (cantina, 
 
 Per chat sui cocktail (bartender): se cocktail è classico universalmente noto (Negroni, Margarita, Mojito, Spritz, Americano) E gli ingredienti dichiarati corrispondono alla ricetta standard, puoi citare storia generale. Se signature o sconosciuto, limitati ai dati nel JSON.
 
-Risposte brevi, educate, in lingua dell'utente (IT/EN/FR/DE). Mai inventare informazioni mancanti.`
+Risposte brevi, educate, in lingua dell'utente (IT/EN/FR/DE). Mai inventare informazioni mancanti.`;
+
+    const result = await callGeminiWithRetry(
+      (modelName) => getAI().chats.create({
+        model: modelName,
+        history: formattedHistory,
+        config: {
+          temperature: 0.2,
+          systemInstruction: systemInstruction
         }
       }),
       msgToSend

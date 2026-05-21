@@ -571,7 +571,7 @@ function AIChatSheet({ isOpen, onClose, menuContext, lang }: any) {
 
       const response = await fetch("/api/customer/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg, menuContext: simplifyMenuForAI(fullMenuContext), history: messages })
+        body: JSON.stringify({ message: userMsg, menuContext: simplifyMenuForAI(fullMenuContext), history: messages, lang })
       });
       const data = await response.json();
       if (data.error) {
